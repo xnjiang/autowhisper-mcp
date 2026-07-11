@@ -27,6 +27,8 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 - **`autowhisper_cmo`** — send an instruction to your CMO and get its reply. e.g. *"Add my product https://mystore.com/widget and start the CMO"*, *"Generate a UGC video for my product"*, *"Publish the approved content"*.
 - **`autowhisper_confirm`** — approve or decline a destructive action the CMO asks about.
 
+> **Adding a product:** lead with a product **URL** (*"add my product https://mystore.com/widget"*) — the CMO extracts the image from the page. A text-only description won't create it (placeholder/stock images are rejected).
+
 ## One-time setup
 
 To publish, ask the CMO to connect a social account — OAuth platforms return a link you click once. After that, publishing is hands-off.
