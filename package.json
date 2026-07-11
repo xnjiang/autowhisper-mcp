@@ -1,0 +1,47 @@
+{
+  "name": "autowhisper-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for AutoWhisper — drive your AI CMO (generate, approve, and publish marketing content across 30+ platforms) from any MCP client.",
+  "type": "module",
+  "bin": {
+    "autowhisper-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "model-context-protocol",
+    "ai-agent",
+    "claude",
+    "autowhisper",
+    "cmo",
+    "marketing",
+    "social-media",
+    "ugc"
+  ],
+  "author": "AutoWhisper",
+  "license": "MIT",
+  "homepage": "https://autowhisper.xyz/skill",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xnjiang/autowhisper-mcp.git"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.2"
+  }
+}

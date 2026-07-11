@@ -1,0 +1,26 @@
+# Smithery config — https://smithery.ai/docs
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - autowhisperApiToken
+    properties:
+      autowhisperApiToken:
+        type: string
+        title: AutoWhisper API token
+        description: Get it at autowhisper.xyz/skill (Settings -> Connect your agent).
+      autowhisperBaseUrl:
+        type: string
+        title: Base URL
+        default: https://autowhisper.xyz
+        description: Override for self-hosted / staging.
+  commandFunction: |
+    (config) => ({
+      command: "node",
+      args: ["dist/index.js"],
+      env: {
+        AUTOWHISPER_API_TOKEN: config.autowhisperApiToken,
+        AUTOWHISPER_BASE_URL: config.autowhisperBaseUrl || "https://autowhisper.xyz"
+      }
+    })
