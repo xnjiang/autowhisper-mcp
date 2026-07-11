@@ -1,8 +1,8 @@
 # AutoWhisper MCP
 
-Drive your **AutoWhisper AI CMO** from any MCP client (Claude Desktop, Cursor, Windsurf, n8n, …) — add a product, generate on-brand content (UGC video, posts, images), approve, connect social accounts, and **publish across 30+ platforms**, all in natural language.
+A marketing department for any MCP client (Claude Desktop, Cursor, Windsurf, n8n, …) — turn your product into **batches of ready-to-run ad creatives** (UGC video, posts, images), get advice on **which creative to fund**, and keep **every channel alive across 30+ platforms**, all in natural language.
 
-It's the same CMO as the AutoWhisper dashboard, exposed over MCP.
+It's the same CMO as the AutoWhisper dashboard, exposed over MCP. Honest scope: posting ≠ traffic — reach comes from your paid campaigns; this makes sure the creatives convert and your storefront doesn't kill them.
 
 ## Install
 
@@ -24,7 +24,7 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 
 ## Tools
 
-- **`autowhisper_cmo`** — send an instruction to your CMO and get its reply. e.g. *"Add my product https://mystore.com/widget and start the CMO"*, *"Generate a UGC video for my product"*, *"Publish the approved content"*.
+- **`autowhisper_cmo`** — send an instruction to your CMO and get its reply. e.g. *"Make a batch of ad creatives for my product https://mystore.com/widget"*, *"Which creative should I run first?"*, *"Keep my channels posted this week"*.
 - **`autowhisper_confirm`** — approve or decline a destructive action the CMO asks about.
 
 > **Adding a product:** lead with a product **URL** (*"add my product https://mystore.com/widget"*) — the CMO extracts the image from the page. A text-only description won't create it (placeholder/stock images are rejected).

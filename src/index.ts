@@ -50,7 +50,7 @@ server.registerTool(
   {
     title: "Talk to your AutoWhisper CMO",
     description:
-      "Send a natural-language instruction to your AutoWhisper AI CMO and get its reply. The CMO can add a product, generate on-brand content (UGC video, posts, images), approve items, connect social platforms, publish across 30+ networks, and report analytics. Examples: \"Add my product https://mystore.com/widget and start the CMO\", \"Generate a UGC video for my product\", \"Publish the approved content\", \"How did last week's posts do?\". To add a product, pass a product URL (the CMO extracts the image from the page) — a text-only description will not create it, and placeholder/stock images are rejected.",
+      "Send a natural-language instruction to your AutoWhisper AI CMO and get its reply. Best at: (1) generating batches of on-brand ad creatives (UGC video, posts, images) for paid campaigns, (2) advising which creative to fund and how to target, (3) keeping every social channel alive across 30+ networks, plus analytics. Examples: \"Make a batch of ad creatives for my product https://mystore.com/widget\", \"Which creative should I run first, and how should I target?\", \"Keep my channels posted this week\". Honest scope: posting ≠ traffic — reach comes from the user's paid ads. To add a product, pass a product URL (the CMO extracts the image from the page) — a text-only description will not create it, and placeholder/stock images are rejected.",
     inputSchema: {
       instruction: z.string().describe("What you want the CMO to do, in natural language."),
       product_id: z.string().optional().describe("Optional: act on a specific product by its id."),
