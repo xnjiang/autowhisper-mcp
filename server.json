@@ -1,0 +1,35 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.xnjiang/autowhisper-mcp",
+  "description": "Drive your AutoWhisper AI CMO to generate and publish marketing content from any MCP client.",
+  "version": "0.1.0",
+  "website_url": "https://autowhisper.xyz/skill",
+  "repository": {
+    "url": "https://github.com/xnjiang/autowhisper-mcp",
+    "source": "github",
+    "id": "1296996633"
+  },
+  "packages": [
+    {
+      "registry_type": "npm",
+      "registry_base_url": "https://registry.npmjs.org",
+      "identifier": "autowhisper-mcp",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" },
+      "environment_variables": [
+        {
+          "name": "AUTOWHISPER_API_TOKEN",
+          "description": "Your AutoWhisper API token (autowhisper.xyz/skill -> Settings -> Connect your agent).",
+          "is_required": true,
+          "is_secret": true
+        },
+        {
+          "name": "AUTOWHISPER_BASE_URL",
+          "description": "Override the API base URL for self-hosted or staging instances.",
+          "is_required": false,
+          "default": "https://autowhisper.xyz"
+        }
+      ]
+    }
+  ]
+}
