@@ -41,9 +41,12 @@ type PollMessage = {
   content: string;
   message_kind?: string | null;
   pending_action?: { tool?: string; args?: unknown } | null;
+  // Clickable action cards the CMO surfaces (media links, connect links). The
+  // reply text never inlines raw URLs, so these carry the URLs an agent needs.
+  actions?: Array<{ label?: string; url?: string; style?: string }> | null;
 };
 
-const server = new McpServer({ name: "autowhisper", version: "0.1.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.1.1" });
 
 server.registerTool(
   "autowhisper_cmo",
@@ -95,13 +98,21 @@ server.registerTool(
           if (p.error) return text(String(p.error), true);
           const msgs = p.messages || [];
           const reply = msgs.map((m) => m.content).filter(Boolean).join("\n\n");
+          // Surface action-card URLs (content media links etc.) — the CMO puts
+          // these in cards, not in the reply text, so lift them out for the agent.
+          const links = msgs
+            .flatMap((m) => m.actions || [])
+            .filter((a) => Boolean(a && a.url))
+            .map((a) => `- ${a.label || "link"}: ${a.url}`);
+          const linksText = links.length ? `Media links:\n${links.join("\n")}` : "";
+          const combined = [reply, linksText].filter(Boolean).join("\n\n");
           const confirm = msgs.find((m) => m.message_kind === "confirm_required" && m.pending_action);
           if (confirm) {
             return text(
-              `${reply}\n\n[Confirmation required] The CMO wants to run "${confirm.pending_action?.tool}". To proceed, call autowhisper_confirm with message_id=${confirm.message_id} and decision="yes" (or "no" to decline).`,
+              `${combined}\n\n[Confirmation required] The CMO wants to run "${confirm.pending_action?.tool}". To proceed, call autowhisper_confirm with message_id=${confirm.message_id} and decision="yes" (or "no" to decline).`,
             );
           }
-          return text(reply || "(the CMO returned no text)");
+          return text(combined || "(the CMO returned no text)");
         }
       }
       await sleep(POLL_INTERVAL_MS);
