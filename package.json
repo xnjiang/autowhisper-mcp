@@ -1,6 +1,6 @@
 {
   "name": "autowhisper-mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "mcpName": "io.github.xnjiang/autowhisper-mcp",
   "description": "MCP server for AutoWhisper — drive your AI CMO (generate, approve, and publish marketing content across 30+ platforms) from any MCP client.",
   "type": "module",

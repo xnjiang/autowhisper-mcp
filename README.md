@@ -29,7 +29,12 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 - **`autowhisper_products`** — fast product list, with optional workspace/archive filters.
 - **`autowhisper_status`** — fast CMO/account snapshot: products, feed, platforms, wallet, and automation settings.
 - **`autowhisper_feed`** — fast CMO feed list with status counts and available approve/reject/dismiss actions.
-- **`autowhisper_confirm`** — approve or decline a destructive action the CMO asks about.
+- **`autowhisper_posts`** — fast post queue list, optionally filtered by status.
+- **`autowhisper_wallet`** — fast credit balance.
+- **`autowhisper_platforms`** — fast connected-platform list and connection health.
+- **`autowhisper_action`** — direct approve/reject/dismiss/publish/reschedule/retry actions. High-impact actions return a confirmation id.
+- **`autowhisper_edit_content`** — direct title/body/hook/CTA/tone/keyword edits without a generation run.
+- **`autowhisper_confirm`** — approve or decline any high-impact action the CMO or direct-action tool asks about.
 
 > **Adding a product:** lead with a product **URL** (*"add my product https://mystore.com/widget"*) — the CMO extracts the image from the page. A text-only description won't create it (placeholder/stock images are rejected).
 
