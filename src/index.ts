@@ -6,6 +6,7 @@
  *   - autowhisper_products_summary: fast read-only product counts
  *   - autowhisper_products:         fast read-only product list
  *   - autowhisper_status:           fast read-only account/CMO status
+ *   - autowhisper_feed:             fast read-only CMO feed list
  *   - autowhisper_confirm:          approve/decline a destructive action
  *
  * Auth: set AUTOWHISPER_API_TOKEN (Settings -> Connect your agent).
@@ -87,6 +88,34 @@ type CmoStatus = {
   settings?: Record<string, unknown>;
 };
 
+type FeedList = {
+  scope?: string;
+  status?: string;
+  returned?: number;
+  counts?: Record<string, number>;
+  workspace?: { id?: number; name?: string } | null;
+  feed_items?: Array<{
+    id?: number;
+    action_type?: string;
+    priority?: string;
+    status?: string;
+    recommendation?: string | null;
+    created_at?: string;
+    feedable?: {
+      type?: string;
+      id?: number;
+      title?: string;
+      product_name?: string | null;
+      status?: string | null;
+      content_status?: string | null;
+      cover_image_url?: string | null;
+      media_urls?: string[];
+      share_url?: string | null;
+    } | null;
+    available_actions?: Array<{ tool?: string; confirmation_required?: boolean; capabilities?: string[] }>;
+  }>;
+};
+
 async function getJson<T>(path: string): Promise<{ data?: T; error?: string }> {
   let res: Response;
   try {
@@ -137,6 +166,21 @@ function formatCmoStatus(status: CmoStatus): string {
   ].join("\n");
 }
 
+function formatFeed(list: FeedList): string {
+  const counts = list.counts || {};
+  const items = list.feed_items || [];
+  const rows = items.map((item) => {
+    const f = item.feedable || {};
+    const product = f.product_name ? ` · ${f.product_name}` : "";
+    const actions = (item.available_actions || [])
+      .map((a) => `${a.tool}${a.confirmation_required ? " (confirm)" : ""}`)
+      .join(", ");
+    return `- #${item.id} ${f.title || item.action_type || "Feed item"} [${item.status || "unknown"}${product}]${actions ? ` actions: ${actions}` : ""}`;
+  });
+  const header = `Feed (${list.status || "pending"}): ${items.length}/${list.returned ?? items.length} returned. Counts: pending ${counts.pending ?? 0}, approved ${counts.approved ?? 0}, rejected ${counts.rejected ?? 0}, executed ${counts.executed ?? 0}.`;
+  return [header, rows.join("\n")].filter(Boolean).join("\n\n");
+}
+
 function fastReadPath(instruction: string): string | null {
   const normalized = instruction.toLowerCase();
   if (
@@ -159,6 +203,9 @@ function fastReadPath(instruction: string): string | null {
   if (/状态|概况/.test(instruction) || /cmo status|account status/.test(normalized)) {
     return "/api/cmo/status";
   }
+  if (/feed|待处理|待审批|批准|审核/.test(normalized) || /待处理|待审批|批准|审核/.test(instruction)) {
+    return "/api/cmo/feed";
+  }
   return null;
 }
 
@@ -170,6 +217,10 @@ async function handleFastRead(path: string) {
   if (path === "/api/products") {
     const result = await getJson<ProductList>(path);
     return result.error ? text(result.error, true) : text(formatProductList(result.data || {}));
+  }
+  if (path === "/api/cmo/feed") {
+    const result = await getJson<FeedList>(path);
+    return result.error ? text(result.error, true) : text(formatFeed(result.data || {}));
   }
   const result = await getJson<CmoStatus>(path);
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
@@ -186,7 +237,7 @@ type PollMessage = {
   actions?: Array<{ label?: string; url?: string; style?: string }> | null;
 };
 
-const server = new McpServer({ name: "autowhisper", version: "0.1.2" });
+const server = new McpServer({ name: "autowhisper", version: "0.1.3" });
 
 server.registerTool(
   "autowhisper_products_summary",
@@ -234,6 +285,29 @@ server.registerTool(
   async () => {
     if (!TOKEN) return text(NO_TOKEN, true);
     return handleFastRead("/api/cmo/status");
+  },
+);
+
+server.registerTool(
+  "autowhisper_feed",
+  {
+    title: "AutoWhisper CMO feed",
+    description: "Fast read-only CMO feed list with status counts and available actions. Use for pending review/feed/status questions.",
+    inputSchema: {
+      status: z.enum(["pending", "approved", "rejected", "dismissed", "executed", "all"]).optional().describe("Feed status to return. Defaults to pending."),
+      workspace_id: z.number().optional().describe("Optional workspace id."),
+      limit: z.number().optional().describe("Maximum feed items to return, capped by the API."),
+    },
+  },
+  async ({ status, workspace_id, limit }) => {
+    if (!TOKEN) return text(NO_TOKEN, true);
+    const params = new URLSearchParams();
+    if (status !== undefined) params.set("status", status);
+    if (workspace_id !== undefined) params.set("workspace_id", String(workspace_id));
+    if (limit !== undefined) params.set("limit", String(limit));
+    const path = `/api/cmo/feed${params.size ? `?${params.toString()}` : ""}`;
+    const result = await getJson<FeedList>(path);
+    return result.error ? text(result.error, true) : text(formatFeed(result.data || {}));
   },
 );
 
