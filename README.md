@@ -25,6 +25,9 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 ## Tools
 
 - **`autowhisper_cmo`** — send an instruction to your CMO and get its reply. e.g. *"Make a batch of ad creatives for my product https://mystore.com/widget"*, *"Which creative should I run first?"*, *"Keep my channels posted this week"*.
+- **`autowhisper_products_summary`** — fast product counts by account/workspace. Use for *"how many products do I have?"* instead of spending a CMO chat turn.
+- **`autowhisper_products`** — fast product list, with optional workspace/archive filters.
+- **`autowhisper_status`** — fast CMO/account snapshot: products, feed, platforms, wallet, and automation settings.
 - **`autowhisper_confirm`** — approve or decline a destructive action the CMO asks about.
 
 > **Adding a product:** lead with a product **URL** (*"add my product https://mystore.com/widget"*) — the CMO extracts the image from the page. A text-only description won't create it (placeholder/stock images are rejected).
