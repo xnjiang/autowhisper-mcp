@@ -20,6 +20,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { fastReadPath } from "./fast-read.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
@@ -120,6 +121,7 @@ type FeedList = {
 };
 
 type PostList = {
+  scope?: string;
   workspace?: { id?: number; name?: string } | null;
   status?: string;
   returned?: number;
@@ -128,18 +130,23 @@ type PostList = {
     status?: string;
     scheduled_at?: string | null;
     published_at?: string | null;
+    workspace?: { id?: number; name?: string } | null;
     platform?: { type?: string | null; username?: string | null };
     content?: { type?: string; id?: number; title?: string | null; share_url?: string | null };
+    // Present only on failed posts. Without it, [failed] is undiagnosable.
+    failure?: { reason?: string | null; needs_reconnect?: boolean; retry_count?: number | null } | null;
   }>;
 };
 
 type Wallet = { balance?: number; formatted_balance?: string; currency?: string };
 
 type PlatformList = {
+  scope?: string;
   workspace?: { id?: number; name?: string } | null;
   returned?: number;
   platforms?: Array<{
     id?: number;
+    workspace?: { id?: number; name?: string } | null;
     type?: string;
     username?: string | null;
     active?: boolean;
@@ -159,50 +166,66 @@ type ActionResult = {
   updated_fields?: string[];
 };
 
-async function getJson<T>(path: string): Promise<{ data?: T; error?: string }> {
-  let res: Response;
+// A body is not guaranteed to be JSON: a proxy 502, a redirect, or a Rails error
+// page all return HTML. `await res.json()` on those THROWS, which used to escape
+// the tool handler as an unhandled rejection instead of a readable message. Always
+// read text first and degrade to a snippet.
+async function readBody(res: Response): Promise<{ json?: unknown; snippet: string }> {
+  let raw = "";
   try {
-    res = await api(path, { method: "GET" });
+    raw = await res.text();
   } catch (e) {
-    return { error: `Could not reach AutoWhisper at ${BASE_URL}: ${(e as Error).message}` };
+    return { snippet: `<unreadable body: ${(e as Error).message}>` };
   }
-  if (res.status === 401) return { error: "Unauthorized — check your AUTOWHISPER_API_TOKEN." };
-  if (!res.ok) return { error: `AutoWhisper API error: HTTP ${res.status}` };
-  return { data: (await res.json()) as T };
+  try {
+    return { json: JSON.parse(raw), snippet: raw.slice(0, 300) };
+  } catch {
+    return { snippet: raw.slice(0, 300) || "<empty body>" };
+  }
 }
 
-async function postForm<T>(path: string, values: Record<string, string>): Promise<{ data?: T; error?: string }> {
+// Server-supplied `error` strings are the actionable part ("workspace not found",
+// "invalid status"). A bare "HTTP 404" tells an agent nothing it can act on.
+function apiErrorMessage(res: Response, body: { json?: unknown; snippet: string }): string {
+  const fromJson = (body.json as { error?: string } | undefined)?.error;
+  if (fromJson) return `AutoWhisper API error (HTTP ${res.status}): ${fromJson}`;
+  return `AutoWhisper API error: HTTP ${res.status} — ${body.snippet}`;
+}
+
+async function requestJson<T>(
+  path: string,
+  init: RequestInit,
+  okStatuses: number[] = [],
+): Promise<{ data?: T; error?: string }> {
   let res: Response;
   try {
-    res = await api(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(values),
-    });
+    res = await api(path, init);
   } catch (e) {
     return { error: `Could not reach AutoWhisper at ${BASE_URL}: ${(e as Error).message}` };
   }
   if (res.status === 401) return { error: "Unauthorized — check your AUTOWHISPER_API_TOKEN." };
-  const data = (await res.json()) as T;
-  if (!res.ok && res.status !== 202) return { error: (data as { error?: string }).error || `AutoWhisper API error: HTTP ${res.status}` };
-  return { data };
+
+  const body = await readBody(res);
+  if (!res.ok && !okStatuses.includes(res.status)) return { error: apiErrorMessage(res, body) };
+  if (body.json === undefined) {
+    return { error: `AutoWhisper returned a non-JSON response (HTTP ${res.status}): ${body.snippet}` };
+  }
+  return { data: body.json as T };
+}
+
+async function getJson<T>(path: string): Promise<{ data?: T; error?: string }> {
+  return requestJson<T>(path, { method: "GET" });
+}
+
+const FORM_HEADERS = { "Content-Type": "application/x-www-form-urlencoded" };
+
+async function postForm<T>(path: string, values: Record<string, string>): Promise<{ data?: T; error?: string }> {
+  // 202 carries the confirmation_required payload, so it is a success here.
+  return requestJson<T>(path, { method: "POST", headers: FORM_HEADERS, body: new URLSearchParams(values) }, [202]);
 }
 
 async function patchForm<T>(path: string, values: Record<string, string>): Promise<{ data?: T; error?: string }> {
-  let res: Response;
-  try {
-    res = await api(path, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(values),
-    });
-  } catch (e) {
-    return { error: `Could not reach AutoWhisper at ${BASE_URL}: ${(e as Error).message}` };
-  }
-  if (res.status === 401) return { error: "Unauthorized — check your AUTOWHISPER_API_TOKEN." };
-  const data = (await res.json()) as T;
-  if (!res.ok) return { error: (data as { error?: string }).error || `AutoWhisper API error: HTTP ${res.status}` };
-  return { data };
+  return requestJson<T>(path, { method: "PATCH", headers: FORM_HEADERS, body: new URLSearchParams(values) });
 }
 
 function formatProductSummary(summary: ProductSummary): string {
@@ -243,19 +266,49 @@ function formatCmoStatus(status: CmoStatus): string {
   ].join("\n");
 }
 
+// The feed reports feedable.type as a Rails class name ("SocialCopy"), but every
+// content-addressing tool takes snake_case ("social_copy"). Emitting the raw class
+// name left agents to guess the mapping, so print the value the tools accept.
+function snakeCaseType(type: string | undefined): string {
+  if (!type) return "content";
+  return type
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+}
+
 function formatFeed(list: FeedList): string {
   const counts = list.counts || {};
   const items = list.feed_items || [];
+  // Two DIFFERENT id spaces live on one row and must never be shown as one bare
+  // "#795": feed_item_id addresses the review card (approve/reject/dismiss) while
+  // content_id addresses the content itself (edit_content). Printing only the feed
+  // item id made agents pass it as content_id and get "not found" — reported
+  // 2026-07-23 as an edit_content bug. Always label which id is which.
   const rows = items.map((item) => {
     const f = item.feedable || {};
     const product = f.product_name ? ` · ${f.product_name}` : "";
     const actions = (item.available_actions || [])
       .map((a) => `${a.tool}${a.confirmation_required ? " (confirm)" : ""}`)
       .join(", ");
-    return `- #${item.id} ${f.title || item.action_type || "Feed item"} [${item.status || "unknown"}${product}]${actions ? ` actions: ${actions}` : ""}`;
+    const contentRef = f.id ? ` · content: ${snakeCaseType(f.type)} #${f.id}` : "";
+    const title = f.title || item.action_type || "Feed item";
+    return `- feed_item #${item.id}${contentRef} — ${title} [${item.status || "unknown"}${product}]${actions ? ` actions: ${actions}` : ""}`;
   });
   const header = `Feed (${list.status || "pending"}): ${items.length}/${list.returned ?? items.length} returned. Counts: pending ${counts.pending ?? 0}, approved ${counts.approved ?? 0}, rejected ${counts.rejected ?? 0}, executed ${counts.executed ?? 0}.`;
   return [header, rows.join("\n")].filter(Boolean).join("\n\n");
+}
+
+// Both lists span every workspace unless workspace_id narrows them, so each row
+// names its workspace — otherwise two clients' identical @handles are
+// indistinguishable. The header states the scope for the same reason.
+function scopeLine(scope: string | undefined, workspace: { name?: string } | null | undefined): string {
+  if (scope === "workspace" && workspace?.name) return ` (workspace: ${workspace.name})`;
+  return scope === "account" ? " (all workspaces)" : "";
+}
+
+function workspaceTag(workspace: { name?: string } | null | undefined): string {
+  return workspace?.name ? ` [${workspace.name}]` : "";
 }
 
 function formatPosts(list: PostList): string {
@@ -264,9 +317,17 @@ function formatPosts(list: PostList): string {
     const content = post.content || {};
     const platform = post.platform?.type || "unknown platform";
     const when = post.scheduled_at ? ` at ${post.scheduled_at}` : "";
-    return `- #${post.id} ${content.title || content.type || "content"} -> ${platform} [${post.status || "unknown"}]${when}`;
+    // A failed row is only useful with its reason and whether a retry can work:
+    // needs_reconnect means the human must re-authorise, so retry_post never helps.
+    const f = post.failure;
+    const failure = f
+      ? ` — failed: ${f.reason || "no reason reported"}${f.needs_reconnect ? " (needs reconnect: a human must re-authorise this channel; retry will not help)" : " (retryable with autowhisper_action retry_post)"}`
+      : "";
+    const contentRef = content.id ? ` · content: ${snakeCaseType(content.type)} #${content.id}` : "";
+    return `- post #${post.id}${contentRef} ${content.title || "content"} -> ${platform} [${post.status || "unknown"}]${when}${workspaceTag(post.workspace)}${failure}`;
   });
-  return [`Posts: ${posts.length}/${list.returned ?? posts.length} returned.`, rows.join("\n")].filter(Boolean).join("\n\n");
+  const header = `Posts: ${posts.length}/${list.returned ?? posts.length} returned${scopeLine(list.scope, list.workspace)}.`;
+  return [header, rows.join("\n")].filter(Boolean).join("\n\n");
 }
 
 function formatPlatforms(list: PlatformList): string {
@@ -274,9 +335,10 @@ function formatPlatforms(list: PlatformList): string {
   const rows = platforms.map((platform) => {
     const handle = platform.username ? ` @${platform.username}` : "";
     const state = platform.needs_reconnect ? "needs reconnect" : platform.connected ? "connected" : "not connected";
-    return `- #${platform.id} ${platform.type || "platform"}${handle}: ${state}${platform.auto_publishable ? "; auto-publishable" : ""}`;
+    return `- #${platform.id} ${platform.type || "platform"}${handle}: ${state}${platform.auto_publishable ? "; auto-publishable" : ""}${workspaceTag(platform.workspace)}`;
   });
-  return [`Platforms: ${platforms.length}/${list.returned ?? platforms.length} returned.`, rows.join("\n")].filter(Boolean).join("\n\n");
+  const header = `Platforms: ${platforms.length}/${list.returned ?? platforms.length} returned${scopeLine(list.scope, list.workspace)}.`;
+  return [header, rows.join("\n")].filter(Boolean).join("\n\n");
 }
 
 function formatAction(result: ActionResult): string {
@@ -284,43 +346,6 @@ function formatAction(result: ActionResult): string {
     return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
   }
   return result.message || "Done.";
-}
-
-function fastReadPath(instruction: string): string | null {
-  const normalized = instruction.toLowerCase();
-  if (
-    /多少.*产品/.test(instruction) ||
-    /几个.*产品/.test(instruction) ||
-    /产品.*数量/.test(instruction) ||
-    /how many .*products?/.test(normalized) ||
-    /product count|number of products/.test(normalized)
-  ) {
-    return "/api/products/summary";
-  }
-  if (
-    /列出.*产品/.test(instruction) ||
-    /有哪些.*产品/.test(instruction) ||
-    /所有产品/.test(instruction) ||
-    /list .*products?|show .*products?/.test(normalized)
-  ) {
-    return "/api/products";
-  }
-  if (/余额|积分|credits?|wallet/.test(instruction) || /wallet|credit balance/.test(normalized)) {
-    return "/api/wallet";
-  }
-  if (/帖子|发帖|排程|已发布|失败发布/.test(instruction) || /list .*posts?|scheduled posts?|failed posts?/.test(normalized)) {
-    return "/api/posts";
-  }
-  if (/已连接.*平台|平台.*连接|platforms?/.test(instruction) || /connected platforms?/.test(normalized)) {
-    return "/api/platforms";
-  }
-  if (/状态|概况/.test(instruction) || /cmo status|account status/.test(normalized)) {
-    return "/api/cmo/status";
-  }
-  if (/feed|待处理|待审批|批准|审核/.test(normalized) || /待处理|待审批|批准|审核/.test(instruction)) {
-    return "/api/cmo/feed";
-  }
-  return null;
 }
 
 async function handleFastRead(path: string) {
@@ -498,7 +523,7 @@ server.registerTool(
     description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm.",
     inputSchema: {
       tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "reschedule_post", "retry_post", "mark_as_published"]),
-      feed_item_id: z.number().optional().describe("Required for feed actions."),
+      feed_item_id: z.number().optional().describe("Required for feed actions. The leading `feed_item #<id>` in an autowhisper_feed row — NOT the `content: <type> #<id>` on the same row."),
       post_id: z.number().optional().describe("Required for post actions."),
       scheduled_at: z.string().optional().describe("Required for reschedule_post; ISO8601 or natural language supported by AutoWhisper."),
       reason: z.string().optional().describe("Optional reason for rejecting a feed item."),
@@ -522,10 +547,13 @@ server.registerTool(
   "autowhisper_edit_content",
   {
     title: "AutoWhisper edit content",
-    description: "Directly update exact content fields without a generation run or credit spend. Pass body for the full replacement copy/story.",
+    description:
+      "Directly update exact content fields without a generation run or credit spend. Pass body for the full replacement copy/story. IDs: content_id is the CONTENT id — in autowhisper_feed output that is the `content: <type> #<id>` part of a row, NOT the leading `feed_item #<id>` (that one belongs to autowhisper_action). content_type is the same snake_case value shown there.",
     inputSchema: {
-      content_type: z.enum(["social_copy", "lookbook", "feature_poster", "idea"]),
-      content_id: z.number(),
+      content_type: z.enum(["social_copy", "lookbook", "feature_poster", "idea"])
+        .describe("Content type in snake_case, as printed in the feed row's `content:` part."),
+      content_id: z.number()
+        .describe("The CONTENT id from the feed row's `content: <type> #<id>` — not the feed_item id."),
       title: z.string().optional(),
       body: z.string().optional(),
       hook: z.string().optional(),
@@ -559,18 +587,28 @@ server.registerTool(
     inputSchema: {
       instruction: z.string().describe("What you want the CMO to do, in natural language."),
       product_id: z.string().optional().describe("Optional: act on a specific product by its id."),
+      workspace_id: z
+        .number()
+        .optional()
+        .describe(
+          "Workspace to act in. Omitting it uses the account's FIRST active workspace, which may not be the one you were just reading — and the workspace decides the generated content's LANGUAGE. Pass the workspace_id shown by autowhisper_feed / autowhisper_platforms / autowhisper_products whenever you are working on a specific one.",
+        ),
     },
   },
-  async ({ instruction, product_id }) => {
+  async ({ instruction, product_id, workspace_id }) => {
     if (!TOKEN) return text(NO_TOKEN, true);
     if (!product_id) {
       const path = fastReadPath(instruction);
       if (path) return handleFastRead(path);
     }
 
-    // 1. send the instruction
+    // 1. send the instruction. workspace_id must be forwarded: without it the API
+    // falls back to workspaces.active.first, so an agent that had just read
+    // workspace 3's feed would silently generate into workspace 1 — in workspace
+    // 1's content language. This tool used to accept no workspace_id at all.
     const body = new URLSearchParams({ message: instruction });
     if (product_id) body.set("product_id", product_id);
+    if (workspace_id !== undefined) body.set("workspace_id", String(workspace_id));
     let send: Response;
     try {
       send = await api("/api/cmo/message", {
@@ -584,9 +622,19 @@ server.registerTool(
     if (send.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
     if (send.status === 429) return text("Rate limited — wait a minute and try again.", true);
     if (!send.ok) return text(`AutoWhisper API error (message): HTTP ${send.status}`, true);
-    const sent = (await send.json()) as { message_id?: number };
+    const sent = (await send.json()) as {
+      message_id?: number;
+      workspace?: { id?: number; name?: string; content_lang?: string } | null;
+    };
     const mid = sent.message_id;
     if (!mid) return text("AutoWhisper returned no message_id.", true);
+    // Report the workspace the turn actually resolved to, and its content language.
+    // Generated content uses THAT language, never the chat's — so an agent talking
+    // in Chinese to an English workspace should expect English content back.
+    const ws = sent.workspace;
+    const wsNote = ws?.id
+      ? `Ran in workspace "${ws.name}" (#${ws.id}); content language: ${ws.content_lang || "unknown"}.`
+      : "";
 
     // 2. poll until the CMO finishes the turn
     const deadline = Date.now() + POLL_TIMEOUT_MS;
@@ -611,7 +659,7 @@ server.registerTool(
             .filter((a) => Boolean(a && a.url))
             .map((a) => `- ${a.label || "link"}: ${a.url}`);
           const linksText = links.length ? `Media links:\n${links.join("\n")}` : "";
-          const combined = [reply, linksText].filter(Boolean).join("\n\n");
+          const combined = [reply, linksText, wsNote].filter(Boolean).join("\n\n");
           const confirm = msgs.find((m) => m.message_kind === "confirm_required" && m.pending_action);
           if (confirm) {
             return text(
