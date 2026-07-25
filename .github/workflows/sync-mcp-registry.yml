@@ -77,14 +77,28 @@ jobs:
         env:
           NPM: ${{ steps.npm.outputs.version }}
           REG: ${{ steps.registry.outputs.version }}
+          DRY: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           if [ "$NPM" = "$REG" ]; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "In sync at $NPM — nothing to do."
+            needed=false
+            echo "In sync at $NPM — nothing to publish."
           else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
+            needed=true
             echo "::notice::Registry is on $REG but npm serves $NPM — syncing."
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+
+          # A dry run must be able to prove the plumbing — binary download,
+          # live-schema validation, OIDC auth — at ANY time, not only during the
+          # rare window when the versions happen to disagree. OIDC is the part
+          # most likely to break (permissions, audience, namespace ownership), so
+          # it needs to be testable on demand rather than first exercised during
+          # a real release.
+          if [ "$needed" = "true" ] || [ "$DRY" = "true" ]; then
+            echo "check_plumbing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "check_plumbing=false" >> "$GITHUB_OUTPUT"
           fi
 
       # server.json is what actually gets published, so it must already describe
@@ -106,7 +120,7 @@ jobs:
           fi
 
       - name: Install mcp-publisher
-        if: steps.decide.outputs.needed == 'true'
+        if: steps.decide.outputs.check_plumbing == 'true'
         run: |
           set -euo pipefail
           # Deliberately `latest`, not pinned: the registry has migrated its
@@ -117,11 +131,11 @@ jobs:
           ./mcp-publisher --version
 
       - name: Validate server.json against the live registry schema
-        if: steps.decide.outputs.needed == 'true'
+        if: steps.decide.outputs.check_plumbing == 'true'
         run: ./mcp-publisher validate
 
       - name: Authenticate via GitHub OIDC
-        if: steps.decide.outputs.needed == 'true'
+        if: steps.decide.outputs.check_plumbing == 'true'
         run: ./mcp-publisher login github-oidc
 
       - name: Publish to the MCP Registry
@@ -152,6 +166,6 @@ jobs:
           exit 1
 
       - name: Dry run stopped before publishing
-        if: steps.decide.outputs.needed == 'true' && inputs.dry_run == true
+        if: inputs.dry_run == true
         run: |
           echo "::notice::Dry run — OIDC login succeeded and server.json validated. Skipped publish."
