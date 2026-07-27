@@ -116,7 +116,16 @@ type FeedList = {
       media_urls?: string[];
       share_url?: string | null;
     } | null;
-    available_actions?: Array<{ tool?: string; confirmation_required?: boolean; capabilities?: string[] }>;
+    available_actions?: Array<{
+      tool?: string;
+      // The exact arguments to pass to autowhisper_action for this row. Present
+      // since the 2026-07-27 API change. It matters most for regenerate_content,
+      // whose content_type is the snake_case enum value ("social_copy") while
+      // feedable.type is the class name ("SocialCopy") — do not re-derive it.
+      args?: Record<string, string | number>;
+      confirmation_required?: boolean;
+      capabilities?: string[];
+    }>;
   }>;
 };
 
@@ -288,8 +297,17 @@ function formatFeed(list: FeedList): string {
   const rows = items.map((item) => {
     const f = item.feedable || {};
     const product = f.product_name ? ` · ${f.product_name}` : "";
+    // Print each action WITH its arguments. Listing bare tool names made the
+    // agent guess which id went where — the same mistake the content_id label
+    // below was added to prevent (2026-07-23). The server already computed the
+    // right call; passing it through costs nothing and removes the guess.
     const actions = (item.available_actions || [])
-      .map((a) => `${a.tool}${a.confirmation_required ? " (confirm)" : ""}`)
+      .map((a) => {
+        const args = a.args
+          ? `(${Object.entries(a.args).map(([k, v]) => `${k}=${v}`).join(" ")})`
+          : "";
+        return `${a.tool}${args}${a.confirmation_required ? " [confirm]" : ""}`;
+      })
       .join(", ");
     const contentRef = f.id ? ` · content: ${snakeCaseType(f.type)} #${f.id}` : "";
     const title = f.title || item.action_type || "Feed item";
@@ -520,23 +538,27 @@ server.registerTool(
   "autowhisper_action",
   {
     title: "AutoWhisper delivery action",
-    description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm.",
+    description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm. regenerate_content rewrites an existing draft IN PLACE (same record id, new text) — it is the same action as the Revise button on the web feed card; it takes content_type + content_id, not feed_item_id, and always returns a confirmation because it spends credits.",
     inputSchema: {
-      tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "reschedule_post", "retry_post", "mark_as_published"]),
+      tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "regenerate_content", "reschedule_post", "retry_post", "mark_as_published"]),
       feed_item_id: z.number().optional().describe("Required for feed actions. The leading `feed_item #<id>` in an autowhisper_feed row — NOT the `content: <type> #<id>` on the same row."),
       post_id: z.number().optional().describe("Required for post actions."),
       scheduled_at: z.string().optional().describe("Required for reschedule_post; ISO8601 or natural language supported by AutoWhisper."),
       reason: z.string().optional().describe("Optional reason for rejecting a feed item."),
+      content_type: z.enum(["social_copy", "lookbook", "feature_poster", "idea"]).optional().describe("Required for regenerate_content. The snake_case value from the row's `content: <type> #<id>` — NOT the class name."),
+      content_id: z.number().optional().describe("Required for regenerate_content. The id from the row's `content: <type> #<id>` — NOT feed_item_id."),
       workspace_id: z.number().optional().describe("Optional workspace id."),
     },
   },
-  async ({ tool, feed_item_id, post_id, scheduled_at, reason, workspace_id }) => {
+  async ({ tool, feed_item_id, post_id, scheduled_at, reason, content_type, content_id, workspace_id }) => {
     if (!TOKEN) return text(NO_TOKEN, true);
     const values: Record<string, string> = {};
     if (feed_item_id !== undefined) values.feed_item_id = String(feed_item_id);
     if (post_id !== undefined) values.post_id = String(post_id);
     if (scheduled_at !== undefined) values.scheduled_at = scheduled_at;
     if (reason !== undefined) values.reason = reason;
+    if (content_type !== undefined) values.content_type = content_type;
+    if (content_id !== undefined) values.content_id = String(content_id);
     if (workspace_id !== undefined) values.workspace_id = String(workspace_id);
     const result = await postForm<ActionResult>(`/api/cmo/actions/${tool}`, values);
     return result.error ? text(result.error, true) : text(formatAction(result.data || {}));
