@@ -407,7 +407,7 @@ type PollMessage = {
   actions?: Array<{ label?: string; url?: string; style?: string }> | null;
 };
 
-const server = new McpServer({ name: "autowhisper", version: "0.2.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.3.0" });
 
 server.registerTool(
   "autowhisper_products_summary",
