@@ -32,7 +32,7 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 - **`autowhisper_posts`** — fast post queue list, optionally filtered by status.
 - **`autowhisper_wallet`** — fast credit balance.
 - **`autowhisper_platforms`** — fast connected-platform list and connection health.
-- **`autowhisper_action`** — direct approve/reject/dismiss/publish/reschedule/retry actions. High-impact actions return a confirmation id.
+- **`autowhisper_action`** — direct approve/reject/dismiss/publish/reschedule/retry actions. High-impact actions return a confirmation id. **Approving publishes**: it schedules the piece to every connected platform, and a video draft also starts rendering and charges for it. With nothing connected it goes nowhere, and connecting later does not go back for it — the result says which happened.
 - **`autowhisper_edit_content`** — direct title/body/hook/CTA/tone/keyword edits without a generation run.
 - **`autowhisper_confirm`** — approve or decline any high-impact action the CMO or direct-action tool asks about.
 

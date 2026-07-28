@@ -173,6 +173,9 @@ type ActionResult = {
   message?: string;
   error?: string;
   updated_fields?: string[];
+  // approve_feed_item: how many platforms the piece was actually scheduled to.
+  // 0 means it went nowhere (nothing connected that accepts this content).
+  scheduled?: number;
 };
 
 // A body is not guaranteed to be JSON: a proxy 502, a redirect, or a Rails error
@@ -363,7 +366,18 @@ function formatAction(result: ActionResult): string {
   if (result.confirmation_required) {
     return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
   }
-  return result.message || "Done.";
+  const message = result.message || "Done.";
+  // `message` is localized to the OWNER's language — an English-speaking agent
+  // cannot be expected to read 「已批准并排期发布到 Facebook」 or, worse, to notice
+  // that 「尚未绑定任何社交平台」 means nothing went out. Approving publishes, so
+  // "did it actually go anywhere" is the fact that matters most here; state it in
+  // a language-neutral form alongside the human sentence.
+  if (typeof result.scheduled === "number") {
+    return result.scheduled > 0
+      ? `${message}\n(scheduled to ${result.scheduled} platform${result.scheduled === 1 ? "" : "s"})`
+      : `${message}\n(nothing was scheduled — no connected platform accepts this content. Connecting one later does NOT publish it; approve again or publish it explicitly.)`;
+  }
+  return message;
 }
 
 async function handleFastRead(path: string) {
@@ -407,7 +421,7 @@ type PollMessage = {
   actions?: Array<{ label?: string; url?: string; style?: string }> | null;
 };
 
-const server = new McpServer({ name: "autowhisper", version: "0.3.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.4.0" });
 
 server.registerTool(
   "autowhisper_products_summary",
@@ -538,7 +552,7 @@ server.registerTool(
   "autowhisper_action",
   {
     title: "AutoWhisper delivery action",
-    description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm. regenerate_content rewrites an existing draft IN PLACE (same record id, new text) — it is the same action as the Revise button on the web feed card; it takes content_type + content_id, not feed_item_id, and always returns a confirmation because it spends credits.",
+    description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm. approve_feed_item PUBLISHES: it schedules the piece to every connected platform, and for a video draft it also starts the render and charges credits for it — approving is the spend, not a bookmark. When nothing is connected it schedules nothing, and connecting a platform later does NOT go back for it; the result line says which happened. regenerate_content rewrites an existing draft IN PLACE (same record id, new text) — it is the same action as the Revise button on the web feed card; it takes content_type + content_id, not feed_item_id, and always returns a confirmation because it spends credits.",
     inputSchema: {
       tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "regenerate_content", "reschedule_post", "retry_post", "mark_as_published"]),
       feed_item_id: z.number().optional().describe("Required for feed actions. The leading `feed_item #<id>` in an autowhisper_feed row — NOT the `content: <type> #<id>` on the same row."),
