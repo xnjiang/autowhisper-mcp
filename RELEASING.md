@@ -38,9 +38,22 @@ closes that gap on its own, but the npm half is still yours to do.
    ```
 
 4. **Commit and push.** The push triggers the registry sync, which reads npm's
-   `latest` and publishes a matching registry version. Nothing to run by hand.
+   `latest` and publishes a matching registry version.
    ```sh
    git commit -am "release: 0.3.0" && git push origin main
+   ```
+
+   ⚠️ **Order matters, and step 3 must really come first.** The sync job compares
+   npm against the registry — it does not read this repo's version. Push before
+   publishing (or publish while the job is already running) and it finds both
+   channels still on the OLD version, reports `In sync at <old> — nothing to
+   publish`, and exits green. Nothing is broken and nothing is wrong in the log;
+   the new version simply is not in the registry, and stays out until the Monday
+   cron. That happened on 0.4.0 (2026-07-28).
+
+   If you pushed first, just run the job again once npm is updated:
+   ```sh
+   gh workflow run sync-mcp-registry.yml
    ```
 
 5. **Confirm both channels agree.** CI does this itself and fails loudly if not,
