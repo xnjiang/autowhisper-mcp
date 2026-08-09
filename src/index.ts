@@ -84,6 +84,9 @@ type ProductList = {
 
 type CmoStatus = {
   current_workspace?: { id?: number; name?: string } | null;
+  // ★ 2026-08-09:服务端把读接口收进当前工作区后新增的【目录】。收窄作用域却不给
+  // 发现出口 = 调用方被永久锁在第一个工作区,所以这个字段是隔离的必要配套。
+  workspaces?: Array<{ id?: number; name?: string; current?: boolean }>;
   account?: { workspaces_count?: number; timezone?: string };
   products?: { active_count?: number; archived_count?: number; total_count?: number };
   feed?: Record<string, number>;
@@ -270,12 +273,24 @@ function formatCmoStatus(status: CmoStatus): string {
   const platforms = status.platforms || {};
   const products = status.products || {};
   const wallet = status.wallet || {};
+  const cur = status.current_workspace;
+  const all = status.workspaces || [];
+  // 每一行计数都【只属于当前工作区】—— 不说清楚的话,调用方会把它当成账号总数,
+  // 而账号总数在 autowhisper_products_summary 里(那个才跨全部工作区)。
+  const header = cur?.name
+    ? `Current workspace: ${cur.name} (id ${cur.id}). All counts below are for THIS workspace only.`
+    : "Current workspace: unknown.";
+  const directory = all.length > 1
+    ? `Other workspaces (pass workspace_id to read them): ${all.filter((w) => !w.current).map((w) => `${w.name} (id ${w.id})`).join(", ")}.`
+    : "";
   return [
+    header,
+    directory,
     `Products: ${products.active_count ?? 0} active, ${products.archived_count ?? 0} archived, ${products.total_count ?? 0} total.`,
     `Feed: ${feed.pending ?? 0} pending, ${feed.approved ?? 0} approved, ${feed.executed ?? 0} executed.`,
     `Platforms: ${platforms.connected_count ?? 0} connected, ${platforms.needs_reconnect_count ?? 0} need reconnect, ${platforms.auto_publishable_count ?? 0} auto-publishable.`,
-    `Wallet: ${wallet.formatted_balance || `${wallet.balance ?? 0} tokens`}.`,
-  ].join("\n");
+    `Wallet: ${wallet.formatted_balance || `${wallet.balance ?? 0} tokens`} (account-wide, not per workspace).`,
+  ].filter(Boolean).join("\n");
 }
 
 // The feed reports feedable.type as a Rails class name ("SocialCopy"), but every
@@ -320,9 +335,11 @@ function formatFeed(list: FeedList): string {
   return [header, rows.join("\n")].filter(Boolean).join("\n\n");
 }
 
-// Both lists span every workspace unless workspace_id narrows them, so each row
-// names its workspace — otherwise two clients' identical @handles are
-// indistinguishable. The header states the scope for the same reason.
+// ★ 2026-08-09:服务端把 feed / posts / platforms / products 从"不传 workspace_id
+// 就跨全部工作区"改成了"不传就用当前工作区" ⇒ 这些列表【永远】是单工作区的,
+// scope 恒为 "workspace"。每行仍标出工作区名:调用方得看得出自己拿到的是哪个
+// 工作区的数据,而且两个客户端相同的 @handle 否则分不清。
+// ("account" 分支留着只为兼容还没升级的服务端。)
 function scopeLine(scope: string | undefined, workspace: { name?: string } | null | undefined): string {
   if (scope === "workspace" && workspace?.name) return ` (workspace: ${workspace.name})`;
   return scope === "account" ? " (all workspaces)" : "";
@@ -421,13 +438,13 @@ type PollMessage = {
   actions?: Array<{ label?: string; url?: string; style?: string }> | null;
 };
 
-const server = new McpServer({ name: "autowhisper", version: "0.4.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.5.0" });
 
 server.registerTool(
   "autowhisper_products_summary",
   {
     title: "AutoWhisper product counts",
-    description: "Fast read-only product counts by account and workspace. Use for questions like 'how many products do I have?'.",
+    description: "Fast read-only product counts, account-wide AND per workspace. Unlike the other read tools this one spans EVERY workspace — use it for 'how many products do I have in total?' and to discover workspace ids.",
     inputSchema: {},
   },
   async () => {
@@ -440,10 +457,10 @@ server.registerTool(
   "autowhisper_products",
   {
     title: "AutoWhisper products",
-    description: "Fast read-only product list. Use instead of autowhisper_cmo when the user only wants to list/search current products.",
+    description: "Fast read-only product list for ONE workspace (the user's current one unless workspace_id is given). Use instead of autowhisper_cmo when the user only wants to list/search products.",
     inputSchema: {
       include_archived: z.boolean().optional().describe("Include archived products."),
-      workspace_id: z.number().optional().describe("Optional workspace id."),
+      workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. To reach another one, get its id from autowhisper_status."),
       limit: z.number().optional().describe("Maximum products to return, capped by the API."),
     },
   },
@@ -463,7 +480,7 @@ server.registerTool(
   "autowhisper_status",
   {
     title: "AutoWhisper CMO status",
-    description: "Fast read-only account/CMO snapshot: products, feed, connected platforms, wallet, and automation settings.",
+    description: "Fast read-only CMO snapshot for the user's CURRENT workspace (products, feed, platforms, automation settings) plus the account-level wallet and a directory of EVERY workspace with its id. Call this first to learn which workspaces exist and which one is current — every other read tool defaults to the current one and does NOT span the others.",
     inputSchema: {},
   },
   async () => {
@@ -476,10 +493,10 @@ server.registerTool(
   "autowhisper_feed",
   {
     title: "AutoWhisper CMO feed",
-    description: "Fast read-only CMO feed list with status counts and available actions. Use for pending review/feed/status questions.",
+    description: "Fast read-only CMO feed list for ONE workspace (the user's current one unless workspace_id is given), with status counts and available actions. Use for pending review/feed/status questions.",
     inputSchema: {
       status: z.enum(["pending", "approved", "rejected", "dismissed", "executed", "all"]).optional().describe("Feed status to return. Defaults to pending."),
-      workspace_id: z.number().optional().describe("Optional workspace id."),
+      workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. To reach another one, get its id from autowhisper_status."),
       limit: z.number().optional().describe("Maximum feed items to return, capped by the API."),
     },
   },
@@ -499,10 +516,10 @@ server.registerTool(
   "autowhisper_posts",
   {
     title: "AutoWhisper posts",
-    description: "Fast delivery-queue list for the active workspace. Use for scheduled, failed, and published post facts.",
+    description: "Fast delivery-queue list for ONE workspace (the user's current one unless workspace_id is given). Use for scheduled, failed, and published post facts.",
     inputSchema: {
       status: z.enum(["draft", "scheduled", "publishing", "published", "failed"]).optional().describe("Optional post status filter."),
-      workspace_id: z.number().optional().describe("Optional workspace id."),
+      workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. To reach another one, get its id from autowhisper_status."),
       limit: z.number().optional().describe("Maximum posts to return, capped by the API."),
     },
   },
@@ -537,8 +554,8 @@ server.registerTool(
   "autowhisper_platforms",
   {
     title: "AutoWhisper platforms",
-    description: "Fast read-only connected-platform list and connection health for the active workspace.",
-    inputSchema: { workspace_id: z.number().optional().describe("Optional workspace id.") },
+    description: "Fast read-only connected-platform list and connection health for ONE workspace (the user's current one unless workspace_id is given).",
+    inputSchema: { workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. To reach another one, get its id from autowhisper_status.") },
   },
   async ({ workspace_id }) => {
     if (!TOKEN) return text(NO_TOKEN, true);
@@ -561,7 +578,7 @@ server.registerTool(
       reason: z.string().optional().describe("Optional reason for rejecting a feed item."),
       content_type: z.enum(["social_copy", "lookbook", "feature_poster", "idea"]).optional().describe("Required for regenerate_content. The snake_case value from the row's `content: <type> #<id>` — NOT the class name."),
       content_id: z.number().optional().describe("Required for regenerate_content. The id from the row's `content: <type> #<id>` — NOT feed_item_id."),
-      workspace_id: z.number().optional().describe("Optional workspace id."),
+      workspace_id: z.number().optional().describe("Workspace to act in. Omit for the user's CURRENT workspace. The target item must live in that workspace — an id from another workspace will not be found."),
     },
   },
   async ({ tool, feed_item_id, post_id, scheduled_at, reason, content_type, content_id, workspace_id }) => {
