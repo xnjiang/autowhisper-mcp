@@ -27,7 +27,10 @@ const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz")
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
 
 const POLL_INTERVAL_MS = 3000;
-const POLL_TIMEOUT_MS = 90000;
+// 3 min, not 90s: grounded ad advice (recommend_targeting with live web search)
+// measured over two minutes in production on 2026-08-22 — a 90s ceiling guaranteed
+// a false "still working" on the exact path this tool exists to enable.
+const POLL_TIMEOUT_MS = 180000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -721,7 +724,7 @@ server.registerTool(
       await sleep(POLL_INTERVAL_MS);
     }
     return text(
-      `The CMO is still working (message_id ${mid}). Media generation runs in the background and lands in your AutoWhisper feed — check there, or ask again shortly.`,
+      `The CMO is still working (message_id ${mid}) — this call is just giving up waiting, the turn itself is still running server-side. Media generation runs in the background and lands in your AutoWhisper feed — check there. Do NOT resend the same instruction: that starts a second, separately charged turn instead of resuming this one.`,
     );
   },
 );
