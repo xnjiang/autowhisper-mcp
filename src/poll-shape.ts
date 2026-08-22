@@ -97,3 +97,51 @@ export function composeReply(parts: {
 }): string {
   return [parts.reply, parts.cards, parts.toolResults, parts.links, parts.wsNote].filter(Boolean).join("\n\n");
 }
+
+export type ActionResult = {
+  confirmation_required?: boolean;
+  message_id?: number;
+  success?: boolean;
+  message?: string;
+  error?: string;
+  updated_fields?: string[];
+  // approve_feed_item: how many platforms the piece was actually scheduled to.
+  // 0 means it went nowhere (nothing connected that accepts this content).
+  scheduled?: number;
+};
+
+export function formatAction(result: ActionResult): string {
+  if (result.confirmation_required) {
+    return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
+  }
+  const message = result.message || "Done.";
+  // `message` is localized to the OWNER's language — an English-speaking agent
+  // cannot be expected to read 「已批准并排期发布到 Facebook」 or, worse, to notice
+  // that 「尚未绑定任何社交平台」 means nothing went out. Approving publishes, so
+  // "did it actually go anywhere" is the fact that matters most here; state it in
+  // a language-neutral form alongside the human sentence.
+  if (typeof result.scheduled === "number") {
+    return result.scheduled > 0
+      ? `${message}\n(scheduled to ${result.scheduled} platform${result.scheduled === 1 ? "" : "s"})`
+      : `${message}\n(nothing was scheduled — no connected platform accepts this content. Connecting one later does NOT publish it; approve again or publish it explicitly.)`;
+  }
+  return message;
+}
+
+// autowhisper_confirm used to discard the response body entirely and return a
+// fixed "Done — the action was performed." string on every "yes" — including
+// approve_feed_item confirmations where `result.scheduled: 0` means the post
+// went nowhere. That is the exact silent-success failure this branch exists to
+// eliminate; reuse formatAction's wording instead of inventing new phrasing, so
+// the confirm path and the direct-action path never say different things for
+// the same result shape.
+//
+// `decision` here is the value the caller passed to the tool (not re-derived
+// from the response body), so a "no" always renders "Declined." even if the
+// server body is absent or fails to parse — see readBody in index.ts, which
+// never throws and instead degrades to an unparsed snippet.
+export function formatConfirmResult(decision: "yes" | "no", result: ActionResult | null | undefined): string {
+  if (decision === "no") return "Declined.";
+  if (!result) return "Done — the action was performed.";
+  return formatAction(result);
+}

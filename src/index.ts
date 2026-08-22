@@ -21,7 +21,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fastReadPath } from "./fast-read.js";
-import { pollUrl, cardText, toolResultsText, composeReply, type PollMessage } from "./poll-shape.js";
+import {
+  pollUrl,
+  cardText,
+  toolResultsText,
+  composeReply,
+  formatAction,
+  formatConfirmResult,
+  type PollMessage,
+  type ActionResult,
+} from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
@@ -171,18 +180,6 @@ type PlatformList = {
     auto_publishable?: boolean;
     health?: string;
   }>;
-};
-
-type ActionResult = {
-  confirmation_required?: boolean;
-  message_id?: number;
-  success?: boolean;
-  message?: string;
-  error?: string;
-  updated_fields?: string[];
-  // approve_feed_item: how many platforms the piece was actually scheduled to.
-  // 0 means it went nowhere (nothing connected that accepts this content).
-  scheduled?: number;
 };
 
 // A body is not guaranteed to be JSON: a proxy 502, a redirect, or a Rails error
@@ -383,24 +380,6 @@ function formatPlatforms(list: PlatformList): string {
   return [header, rows.join("\n")].filter(Boolean).join("\n\n");
 }
 
-function formatAction(result: ActionResult): string {
-  if (result.confirmation_required) {
-    return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
-  }
-  const message = result.message || "Done.";
-  // `message` is localized to the OWNER's language — an English-speaking agent
-  // cannot be expected to read 「已批准并排期发布到 Facebook」 or, worse, to notice
-  // that 「尚未绑定任何社交平台」 means nothing went out. Approving publishes, so
-  // "did it actually go anywhere" is the fact that matters most here; state it in
-  // a language-neutral form alongside the human sentence.
-  if (typeof result.scheduled === "number") {
-    return result.scheduled > 0
-      ? `${message}\n(scheduled to ${result.scheduled} platform${result.scheduled === 1 ? "" : "s"})`
-      : `${message}\n(nothing was scheduled — no connected platform accepts this content. Connecting one later does NOT publish it; approve again or publish it explicitly.)`;
-  }
-  return message;
-}
-
 async function handleFastRead(path: string) {
   if (path === "/api/products/summary") {
     const result = await getJson<ProductSummary>(path);
@@ -431,7 +410,7 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-const server = new McpServer({ name: "autowhisper", version: "0.5.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.6.0" });
 
 server.registerTool(
   "autowhisper_products_summary",
@@ -769,7 +748,13 @@ server.registerTool(
     if (res.status === 422) return text("Not a valid confirmation, or invalid decision.", true);
     if (res.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
     if (!res.ok) return text(`AutoWhisper API error (confirm): HTTP ${res.status}`, true);
-    return text(decision === "yes" ? "Done — the action was performed." : "Declined.");
+    // The server returns {ok, decision, result} on "yes" — result carries the
+    // same shape as autowhisper_action's response (including approve_feed_item's
+    // `scheduled`). readBody never throws on an absent/unparseable body; it just
+    // degrades to no json, and formatConfirmResult tolerates that.
+    const parsed = await readBody(res);
+    const result = (parsed.json as { result?: ActionResult | null } | undefined)?.result ?? undefined;
+    return text(formatConfirmResult(decision, result));
   },
 );
 
