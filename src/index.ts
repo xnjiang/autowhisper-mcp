@@ -21,12 +21,25 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fastReadPath } from "./fast-read.js";
+import {
+  pollUrl,
+  cardText,
+  toolResultsText,
+  composeReply,
+  formatAction,
+  formatConfirmResult,
+  type PollMessage,
+  type ActionResult,
+} from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
 
 const POLL_INTERVAL_MS = 3000;
-const POLL_TIMEOUT_MS = 90000;
+// 3 min, not 90s: grounded ad advice (recommend_targeting with live web search)
+// measured over two minutes in production on 2026-08-22 — a 90s ceiling guaranteed
+// a false "still working" on the exact path this tool exists to enable.
+const POLL_TIMEOUT_MS = 180000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -167,18 +180,6 @@ type PlatformList = {
     auto_publishable?: boolean;
     health?: string;
   }>;
-};
-
-type ActionResult = {
-  confirmation_required?: boolean;
-  message_id?: number;
-  success?: boolean;
-  message?: string;
-  error?: string;
-  updated_fields?: string[];
-  // approve_feed_item: how many platforms the piece was actually scheduled to.
-  // 0 means it went nowhere (nothing connected that accepts this content).
-  scheduled?: number;
 };
 
 // A body is not guaranteed to be JSON: a proxy 502, a redirect, or a Rails error
@@ -379,24 +380,6 @@ function formatPlatforms(list: PlatformList): string {
   return [header, rows.join("\n")].filter(Boolean).join("\n\n");
 }
 
-function formatAction(result: ActionResult): string {
-  if (result.confirmation_required) {
-    return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
-  }
-  const message = result.message || "Done.";
-  // `message` is localized to the OWNER's language — an English-speaking agent
-  // cannot be expected to read 「已批准并排期发布到 Facebook」 or, worse, to notice
-  // that 「尚未绑定任何社交平台」 means nothing went out. Approving publishes, so
-  // "did it actually go anywhere" is the fact that matters most here; state it in
-  // a language-neutral form alongside the human sentence.
-  if (typeof result.scheduled === "number") {
-    return result.scheduled > 0
-      ? `${message}\n(scheduled to ${result.scheduled} platform${result.scheduled === 1 ? "" : "s"})`
-      : `${message}\n(nothing was scheduled — no connected platform accepts this content. Connecting one later does NOT publish it; approve again or publish it explicitly.)`;
-  }
-  return message;
-}
-
 async function handleFastRead(path: string) {
   if (path === "/api/products/summary") {
     const result = await getJson<ProductSummary>(path);
@@ -427,18 +410,7 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-type PollMessage = {
-  message_id: number;
-  role: string;
-  content: string;
-  message_kind?: string | null;
-  pending_action?: { tool?: string; args?: unknown } | null;
-  // Clickable action cards the CMO surfaces (media links, connect links). The
-  // reply text never inlines raw URLs, so these carry the URLs an agent needs.
-  actions?: Array<{ label?: string; url?: string; style?: string }> | null;
-};
-
-const server = new McpServer({ name: "autowhisper", version: "0.5.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.6.0" });
 
 server.registerTool(
   "autowhisper_products_summary",
@@ -694,7 +666,7 @@ server.registerTool(
     while (Date.now() < deadline) {
       let pr: Response;
       try {
-        pr = await api(`/api/cmo/messages/${mid}`, { method: "GET" });
+        pr = await api(pollUrl(mid, workspace_id), { method: "GET" });
       } catch {
         await sleep(POLL_INTERVAL_MS);
         continue;
@@ -705,14 +677,20 @@ server.registerTool(
           if (p.error) return text(String(p.error), true);
           const msgs = p.messages || [];
           const reply = msgs.map((m) => m.content).filter(Boolean).join("\n\n");
-          // Surface action-card URLs (content media links etc.) — the CMO puts
-          // these in cards, not in the reply text, so lift them out for the agent.
+          // 卡片:正文被指示不复述它们,所以这是唯一的出处。必须并入回复。
+          const cards = cardText(msgs);
+          // 工具结果:除了被 lift 成卡片的那几个工具,其余工具的 result(尤其是
+          // approve_feed_item 的 scheduled)只活在 actions[].result 里,不并入
+          // 就永久丢失 —— SKILL.md 要求报告 scheduled,聊天路径原本做不到。
+          const toolResults = toolResultsText(msgs);
+          // 链接卡:只有带 url 的那一种。⚠️ 别用这个过滤器去看全部 actions ——
+          // 工具结果没有 url,那么过滤等于把它们扔掉。
           const links = msgs
             .flatMap((m) => m.actions || [])
             .filter((a) => Boolean(a && a.url))
             .map((a) => `- ${a.label || "link"}: ${a.url}`);
           const linksText = links.length ? `Media links:\n${links.join("\n")}` : "";
-          const combined = [reply, linksText, wsNote].filter(Boolean).join("\n\n");
+          const combined = composeReply({ reply, cards, toolResults, links: linksText, wsNote });
           const confirm = msgs.find((m) => m.message_kind === "confirm_required" && m.pending_action);
           if (confirm) {
             return text(
@@ -725,7 +703,7 @@ server.registerTool(
       await sleep(POLL_INTERVAL_MS);
     }
     return text(
-      `The CMO is still working (message_id ${mid}). Media generation runs in the background and lands in your AutoWhisper feed — check there, or ask again shortly.`,
+      `The CMO is still working (message_id ${mid}) — this call is just giving up waiting, the turn itself is still running server-side. Media generation runs in the background and lands in your AutoWhisper feed — check there. Do NOT resend the same instruction: that starts a second, separately charged turn instead of resuming this one.`,
     );
   },
 );
@@ -739,11 +717,18 @@ server.registerTool(
     inputSchema: {
       message_id: z.number().describe("The message_id from the confirmation request."),
       decision: z.enum(["yes", "no"]).describe("\"yes\" to perform the action, \"no\" to decline."),
+      workspace_id: z
+        .number()
+        .optional()
+        .describe(
+          "The workspace the confirmation lives in — pass the SAME one you used for autowhisper_cmo. Omitting it falls back to the account's first active workspace and 404s on a bubble that lives anywhere else.",
+        ),
     },
   },
-  async ({ message_id, decision }) => {
+  async ({ message_id, decision, workspace_id }) => {
     if (!TOKEN) return text(NO_TOKEN, true);
     const body = new URLSearchParams({ message_id: String(message_id), decision });
+    if (workspace_id !== undefined) body.set("workspace_id", String(workspace_id));
     let res: Response;
     try {
       res = await api("/api/cmo/confirm", {
@@ -755,11 +740,21 @@ server.registerTool(
       return text(`Could not reach AutoWhisper: ${(e as Error).message}`, true);
     }
     if (res.status === 410) return text("This action was already resolved.", true);
-    if (res.status === 404) return text("Confirmation not found.", true);
+    if (res.status === 404)
+      return text(
+        "Confirmation not found — if you passed a workspace_id to autowhisper_cmo, pass the same one here.",
+        true,
+      );
     if (res.status === 422) return text("Not a valid confirmation, or invalid decision.", true);
     if (res.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
     if (!res.ok) return text(`AutoWhisper API error (confirm): HTTP ${res.status}`, true);
-    return text(decision === "yes" ? "Done — the action was performed." : "Declined.");
+    // The server returns {ok, decision, result} on "yes" — result carries the
+    // same shape as autowhisper_action's response (including approve_feed_item's
+    // `scheduled`). readBody never throws on an absent/unparseable body; it just
+    // degrades to no json, and formatConfirmResult tolerates that.
+    const parsed = await readBody(res);
+    const result = (parsed.json as { result?: ActionResult | null } | undefined)?.result ?? undefined;
+    return text(formatConfirmResult(decision, result));
   },
 );
 
