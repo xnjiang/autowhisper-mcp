@@ -13,9 +13,17 @@ export type PollMessage = {
   content: string;
   message_kind?: string | null;
   pending_action?: { tool?: string; args?: unknown } | null;
-  // Clickable action cards the CMO surfaces (media links, connect links). The
-  // reply text never inlines raw URLs, so these carry the URLs an agent needs.
-  actions?: Array<{ label?: string; url?: string; style?: string }> | null;
+  // ⚠️ 两种形态混在同一个数组里:
+  //   · 工具调用日志 {tool, args, result}
+  //   · 可点击卡片   {label, url, style}
+  // 只按 url 过滤会把工具结果整个丢掉 —— 0.5.0 就是这么丢的。
+  actions?: Array<{
+    label?: string; url?: string; style?: string;
+    tool?: string; args?: unknown; result?: Record<string, unknown>;
+  }> | null;
+  // CMO 把部分工具结果 lift 成成品卡片,并被明确指示【正文不复述】。
+  // 只读 content 的话,一句「建议在下面的卡片里」就是全部内容。
+  cards?: Record<string, Record<string, unknown>> | null;
 };
 
 // ⚠️ 轮询是按工作区作用域的。不带 workspace_id 时服务端回落到
@@ -25,4 +33,20 @@ export function pollUrl(mid: number, workspaceId?: number): string {
   return workspaceId === undefined
     ? `/api/cmo/messages/${mid}`
     : `/api/cmo/messages/${mid}?workspace_id=${workspaceId}`;
+}
+
+const CARD_BODY_KEYS = ["advice", "guidance", "message"] as const;
+
+export function cardText(msgs: PollMessage[]): string {
+  const blocks: string[] = [];
+  for (const m of msgs) {
+    for (const card of Object.values(m.cards || {})) {
+      if (!card) continue;
+      const body = CARD_BODY_KEYS.map((k) => card[k]).find((v) => typeof v === "string" && v.trim());
+      if (!body) continue;
+      const heading = typeof card.heading === "string" ? card.heading : "";
+      blocks.push(heading ? `## ${heading}\n\n${body}` : String(body));
+    }
+  }
+  return blocks.join("\n\n");
 }

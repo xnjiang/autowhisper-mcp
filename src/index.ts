@@ -21,7 +21,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fastReadPath } from "./fast-read.js";
-import { pollUrl, type PollMessage } from "./poll-shape.js";
+import { pollUrl, cardText, type PollMessage } from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
@@ -695,14 +695,16 @@ server.registerTool(
           if (p.error) return text(String(p.error), true);
           const msgs = p.messages || [];
           const reply = msgs.map((m) => m.content).filter(Boolean).join("\n\n");
-          // Surface action-card URLs (content media links etc.) — the CMO puts
-          // these in cards, not in the reply text, so lift them out for the agent.
+          // 卡片:正文被指示不复述它们,所以这是唯一的出处。必须并入回复。
+          const cards = cardText(msgs);
+          // 链接卡:只有带 url 的那一种。⚠️ 别用这个过滤器去看全部 actions ——
+          // 工具结果没有 url,那么过滤等于把它们扔掉。
           const links = msgs
             .flatMap((m) => m.actions || [])
             .filter((a) => Boolean(a && a.url))
             .map((a) => `- ${a.label || "link"}: ${a.url}`);
           const linksText = links.length ? `Media links:\n${links.join("\n")}` : "";
-          const combined = [reply, linksText, wsNote].filter(Boolean).join("\n\n");
+          const combined = [reply, cards, linksText, wsNote].filter(Boolean).join("\n\n");
           const confirm = msgs.find((m) => m.message_kind === "confirm_required" && m.pending_action);
           if (confirm) {
             return text(
