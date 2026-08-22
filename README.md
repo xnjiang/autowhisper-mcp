@@ -38,6 +38,15 @@ Get your token at **[autowhisper.xyz/skill](https://autowhisper.xyz/skill)** →
 
 > **Adding a product:** lead with a product **URL** (*"add my product https://mystore.com/widget"*) — the CMO extracts the image from the page. A text-only description won't create it (placeholder/stock images are rejected).
 
+### Asking for an ad plan
+
+`autowhisper_cmo` also plans campaigns: *"Give me a concrete ad-targeting plan for my product
+— starting markets, targeting, and what to avoid."* The plan arrives as a card (markets, age,
+interest seeds, objective, which creative to run). It is prose for a human, in the owner's UI
+language, and it deliberately leaves out the **budget** (ask the owner) and gives interest
+**search terms rather than platform IDs** (resolve them in your ad tool). AutoWhisper plans and
+supplies creative; your ads MCP executes.
+
 ## One-time setup
 
 To publish, ask the CMO to connect a social account — OAuth platforms return a link you click once. After that, publishing is hands-off.
