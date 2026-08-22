@@ -21,6 +21,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fastReadPath } from "./fast-read.js";
+import { pollUrl, type PollMessage } from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
@@ -427,17 +428,6 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-type PollMessage = {
-  message_id: number;
-  role: string;
-  content: string;
-  message_kind?: string | null;
-  pending_action?: { tool?: string; args?: unknown } | null;
-  // Clickable action cards the CMO surfaces (media links, connect links). The
-  // reply text never inlines raw URLs, so these carry the URLs an agent needs.
-  actions?: Array<{ label?: string; url?: string; style?: string }> | null;
-};
-
 const server = new McpServer({ name: "autowhisper", version: "0.5.0" });
 
 server.registerTool(
@@ -694,7 +684,7 @@ server.registerTool(
     while (Date.now() < deadline) {
       let pr: Response;
       try {
-        pr = await api(`/api/cmo/messages/${mid}`, { method: "GET" });
+        pr = await api(pollUrl(mid, workspace_id), { method: "GET" });
       } catch {
         await sleep(POLL_INTERVAL_MS);
         continue;
@@ -739,11 +729,18 @@ server.registerTool(
     inputSchema: {
       message_id: z.number().describe("The message_id from the confirmation request."),
       decision: z.enum(["yes", "no"]).describe("\"yes\" to perform the action, \"no\" to decline."),
+      workspace_id: z
+        .number()
+        .optional()
+        .describe(
+          "The workspace the confirmation lives in — pass the SAME one you used for autowhisper_cmo. Omitting it falls back to the account's first active workspace and 404s on a bubble that lives anywhere else.",
+        ),
     },
   },
-  async ({ message_id, decision }) => {
+  async ({ message_id, decision, workspace_id }) => {
     if (!TOKEN) return text(NO_TOKEN, true);
     const body = new URLSearchParams({ message_id: String(message_id), decision });
+    if (workspace_id !== undefined) body.set("workspace_id", String(workspace_id));
     let res: Response;
     try {
       res = await api("/api/cmo/confirm", {
@@ -755,7 +752,11 @@ server.registerTool(
       return text(`Could not reach AutoWhisper: ${(e as Error).message}`, true);
     }
     if (res.status === 410) return text("This action was already resolved.", true);
-    if (res.status === 404) return text("Confirmation not found.", true);
+    if (res.status === 404)
+      return text(
+        "Confirmation not found — if you passed a workspace_id to autowhisper_cmo, pass the same one here.",
+        true,
+      );
     if (res.status === 422) return text("Not a valid confirmation, or invalid decision.", true);
     if (res.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
     if (!res.ok) return text(`AutoWhisper API error (confirm): HTTP ${res.status}`, true);
