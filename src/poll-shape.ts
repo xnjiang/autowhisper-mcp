@@ -50,3 +50,50 @@ export function cardText(msgs: PollMessage[]): string {
   }
   return blocks.join("\n\n");
 }
+
+// Tools whose result payload is already rendered by `cardText` above (via
+// `cards`). Keeping this list next to CARD_BODY_KEYS makes the coupling
+// visible: if the server lifts a new tool into `cards`, this list needs the
+// same addition or its result gets reported twice.
+export const CARD_COVERED_TOOLS = ["recommend_targeting", "activation_guide", "generate_inquiry_opener"];
+
+const TOOL_RESULT_MAX_CHARS = 300;
+
+// Everything else that ran as a tool call — most importantly approve_feed_item,
+// whose `result.scheduled` (how many platforms a piece actually went to; 0 means
+// nowhere) is never lifted into `cards`. Without this, SKILL.md's instruction to
+// report `scheduled` is unfollowable on the chat path: the number exists only in
+// actions[].result. Kept compact and truncated on purpose — this is a fallback
+// for outcome data, not a JSON dump of every tool call.
+export function toolResultsText(msgs: PollMessage[]): string {
+  const lines: string[] = [];
+  for (const m of msgs) {
+    for (const a of m.actions || []) {
+      if (!a || !a.result) continue;
+      if (a.tool && CARD_COVERED_TOOLS.includes(a.tool)) continue;
+      let rendered: string;
+      try {
+        rendered = JSON.stringify(a.result);
+      } catch {
+        rendered = String(a.result);
+      }
+      if (rendered.length > TOOL_RESULT_MAX_CHARS) rendered = `${rendered.slice(0, TOOL_RESULT_MAX_CHARS)}…`;
+      lines.push(`- ${a.tool || "tool"}: ${rendered}`);
+    }
+  }
+  return lines.length ? `Tool results:\n${lines.join("\n")}` : "";
+}
+
+// The full reply-assembly, pulled out so the wiring (does `cards`/`toolResults`
+// actually reach the combined text?) is unit-testable. index.ts's registerTool
+// handler is not directly testable (see module header), so this is the closest
+// thing to a regression test for that call site.
+export function composeReply(parts: {
+  reply: string;
+  cards: string;
+  toolResults: string;
+  links: string;
+  wsNote: string;
+}): string {
+  return [parts.reply, parts.cards, parts.toolResults, parts.links, parts.wsNote].filter(Boolean).join("\n\n");
+}

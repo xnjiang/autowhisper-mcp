@@ -21,7 +21,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fastReadPath } from "./fast-read.js";
-import { pollUrl, cardText, type PollMessage } from "./poll-shape.js";
+import { pollUrl, cardText, toolResultsText, composeReply, type PollMessage } from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
 const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
@@ -697,6 +697,10 @@ server.registerTool(
           const reply = msgs.map((m) => m.content).filter(Boolean).join("\n\n");
           // 卡片:正文被指示不复述它们,所以这是唯一的出处。必须并入回复。
           const cards = cardText(msgs);
+          // 工具结果:除了被 lift 成卡片的那几个工具,其余工具的 result(尤其是
+          // approve_feed_item 的 scheduled)只活在 actions[].result 里,不并入
+          // 就永久丢失 —— SKILL.md 要求报告 scheduled,聊天路径原本做不到。
+          const toolResults = toolResultsText(msgs);
           // 链接卡:只有带 url 的那一种。⚠️ 别用这个过滤器去看全部 actions ——
           // 工具结果没有 url,那么过滤等于把它们扔掉。
           const links = msgs
@@ -704,7 +708,7 @@ server.registerTool(
             .filter((a) => Boolean(a && a.url))
             .map((a) => `- ${a.label || "link"}: ${a.url}`);
           const linksText = links.length ? `Media links:\n${links.join("\n")}` : "";
-          const combined = [reply, cards, linksText, wsNote].filter(Boolean).join("\n\n");
+          const combined = composeReply({ reply, cards, toolResults, links: linksText, wsNote });
           const confirm = msgs.find((m) => m.message_kind === "confirm_required" && m.pending_action);
           if (confirm) {
             return text(
