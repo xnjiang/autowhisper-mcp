@@ -82,6 +82,69 @@ test("toolResultsText skips tools already surfaced via cards, to avoid double-re
   assert.equal(toolResultsText(msgs), "");
 });
 
+// Regression for the 2026-08-23 server fix: metadata[:actions] (symbol, the
+// tool-call log) and metadata["actions"] (string, button cards) used to
+// serialise to the same jsonb "actions" key, silently discarding the log on
+// any turn that also produced buttons. The server now exposes the log under
+// its own tool_calls key, with actions[] carrying button cards only.
+test("toolResultsText reads the log from tool_calls when present (post-fix rows)", () => {
+  const msgs: PollMessage[] = [
+    {
+      message_id: 1,
+      role: "assistant",
+      content: "Approved.",
+      tool_calls: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+      actions: [{ label: "View", url: "https://x", style: "primary" }],
+    },
+  ];
+  const out = toolResultsText(msgs);
+  assert.match(out, /approve_feed_item/);
+  assert.match(out, /scheduled/);
+  assert.match(out, /0/);
+});
+
+test("toolResultsText falls back to actions[] only when tool_calls is absent (historical rows)", () => {
+  // tool_calls is undefined here — mirrors a row written before the fix,
+  // where the log was mixed into actions[] instead of living on its own key.
+  const msgs: PollMessage[] = [
+    {
+      message_id: 1,
+      role: "assistant",
+      content: "Approved.",
+      actions: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+    },
+  ];
+  const out = toolResultsText(msgs);
+  assert.match(out, /approve_feed_item/);
+  assert.match(out, /scheduled/);
+});
+
+test("toolResultsText does not double-report when tool_calls is present — actions[] is ignored for that message even if it somehow also carries the same tool", () => {
+  const msgs: PollMessage[] = [
+    {
+      message_id: 1,
+      role: "assistant",
+      content: "Approved.",
+      tool_calls: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+      // Should never happen post-fix (actions[] is buttons-only going forward),
+      // but if a row somehow carried the same tool result in both places, it
+      // must still surface exactly once.
+      actions: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+    },
+  ];
+  const out = toolResultsText(msgs);
+  const occurrences = out.split("approve_feed_item").length - 1;
+  assert.equal(occurrences, 1);
+});
+
 test("toolResultsText handles missing actions without throwing", () => {
   const msgs: PollMessage[] = [{ message_id: 1, role: "assistant", content: "hello" }];
   assert.equal(toolResultsText(msgs), "");

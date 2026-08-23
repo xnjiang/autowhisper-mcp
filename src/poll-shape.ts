@@ -13,12 +13,24 @@ export type PollMessage = {
   content: string;
   message_kind?: string | null;
   pending_action?: { tool?: string; args?: unknown } | null;
-  // ⚠️ 两种形态混在同一个数组里:
-  //   · 工具调用日志 {tool, args, result}
-  //   · 可点击卡片   {label, url, style}
-  // 只按 url 过滤会把工具结果整个丢掉 —— 0.5.0 就是这么丢的。
+  // As of the 2026-08-23 server-side fix, actions[] is button cards ONLY:
+  // {label, url, style}. Before that fix it also carried the tool-call log
+  // ({tool, args, result}) mixed into the same array — the server had a
+  // jsonb key collision (metadata[:actions] symbol vs metadata["actions"]
+  // string both serialised to "actions") that silently discarded the log on
+  // any turn that also produced buttons. Historical rows written before the
+  // fix may still show that mixed shape here — see toolResultsText's
+  // fallback below, which still reads tool-log entries out of actions[] for
+  // those rows.
   actions?: Array<{
     label?: string; url?: string; style?: string;
+    tool?: string; args?: unknown; result?: Record<string, unknown>;
+  }> | null;
+  // The tool-call chain log for this turn — {tool, args, result} per hop.
+  // Present (its own key, split out of actions[]) on messages written after
+  // the 2026-08-23 fix. Absent (undefined) on historical rows, which carried
+  // the same data mixed into actions[] instead — see toolResultsText.
+  tool_calls?: Array<{
     tool?: string; args?: unknown; result?: Record<string, unknown>;
   }> | null;
   // CMO 把部分工具结果 lift 成成品卡片,并被明确指示【正文不复述】。
@@ -63,12 +75,22 @@ const TOOL_RESULT_MAX_CHARS = 300;
 // whose `result.scheduled` (how many platforms a piece actually went to; 0 means
 // nowhere) is never lifted into `cards`. Without this, SKILL.md's instruction to
 // report `scheduled` is unfollowable on the chat path: the number exists only in
-// actions[].result. Kept compact and truncated on purpose — this is a fallback
+// the tool-call log. Kept compact and truncated on purpose — this is a fallback
 // for outcome data, not a JSON dump of every tool call.
+//
+// Reads tool_calls (its own key as of the 2026-08-23 server fix) when present;
+// falls back to actions[] only for a message that predates the fix (tool_calls
+// absent there — the log used to be mixed into actions[] before the jsonb key
+// collision was split apart, see PollMessage's doc comment). Per message we
+// pick ONE source, never both, so a message can't double-report; the `seen`
+// set below is a second, defensive guard in case a row somehow carries the
+// same tool+result in both places.
 export function toolResultsText(msgs: PollMessage[]): string {
   const lines: string[] = [];
+  const seen = new Set<string>();
   for (const m of msgs) {
-    for (const a of m.actions || []) {
+    const source = m.tool_calls != null ? m.tool_calls : m.actions || [];
+    for (const a of source) {
       if (!a || !a.result) continue;
       if (a.tool && CARD_COVERED_TOOLS.includes(a.tool)) continue;
       let rendered: string;
@@ -77,6 +99,9 @@ export function toolResultsText(msgs: PollMessage[]): string {
       } catch {
         rendered = String(a.result);
       }
+      const key = `${a.tool || "tool"}:${rendered}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       if (rendered.length > TOOL_RESULT_MAX_CHARS) rendered = `${rendered.slice(0, TOOL_RESULT_MAX_CHARS)}…`;
       lines.push(`- ${a.tool || "tool"}: ${rendered}`);
     }
