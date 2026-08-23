@@ -167,6 +167,26 @@ test("toolResultsText reports both calls when the same tool returns identical re
   assert.equal(occurrences, 2, `expected both distinct calls reported, got:\n${out}`);
 });
 
+// A TRUE duplicate — same tool, same args, same result — must still collapse
+// to one reported line (the seen-set's actual job, as opposed to the
+// differing-args case above which must NOT collapse).
+test("toolResultsText collapses a true duplicate — same tool, same args, same result", () => {
+  const msgs: PollMessage[] = [
+    {
+      message_id: 1,
+      role: "assistant",
+      content: "Approved.",
+      tool_calls: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+    },
+  ];
+  const out = toolResultsText(msgs);
+  const occurrences = out.split("approve_feed_item").length - 1;
+  assert.equal(occurrences, 1, `expected the true duplicate collapsed to one line, got:\n${out}`);
+});
+
 test("toolResultsText handles missing actions without throwing", () => {
   const msgs: PollMessage[] = [{ message_id: 1, role: "assistant", content: "hello" }];
   assert.equal(toolResultsText(msgs), "");
