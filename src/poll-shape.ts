@@ -84,9 +84,16 @@ const TOOL_RESULT_MAX_CHARS = 300;
 // collision was split apart, see PollMessage's doc comment). Per message we
 // pick ONE source, never both, so a message can't double-report; the `seen`
 // set below is a second, defensive guard in case a row somehow carries the
-// same tool+result in both places.
+// same tool+args+result in both places.
 export function toolResultsText(msgs: PollMessage[]): string {
   const lines: string[] = [];
+  // Keyed on message_id + tool + args + result — NOT tool+result alone.
+  // Two distinct calls to the same tool with the same result payload but
+  // different args (e.g. two approve_feed_item calls that both return
+  // scheduled: 0, for two different feed_item_ids) must both be reported;
+  // keying on tool+result only would collapse them into one line and hide
+  // one of the two scheduled counts, which is exactly what this function
+  // exists to surface.
   const seen = new Set<string>();
   for (const m of msgs) {
     const source = m.tool_calls != null ? m.tool_calls : m.actions || [];
@@ -99,7 +106,13 @@ export function toolResultsText(msgs: PollMessage[]): string {
       } catch {
         rendered = String(a.result);
       }
-      const key = `${a.tool || "tool"}:${rendered}`;
+      let renderedArgs: string;
+      try {
+        renderedArgs = JSON.stringify(a.args);
+      } catch {
+        renderedArgs = String(a.args);
+      }
+      const key = `${m.message_id}:${a.tool || "tool"}:${renderedArgs}:${rendered}`;
       if (seen.has(key)) continue;
       seen.add(key);
       if (rendered.length > TOOL_RESULT_MAX_CHARS) rendered = `${rendered.slice(0, TOOL_RESULT_MAX_CHARS)}…`;

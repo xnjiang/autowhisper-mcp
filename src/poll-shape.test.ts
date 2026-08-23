@@ -145,6 +145,28 @@ test("toolResultsText does not double-report when tool_calls is present — acti
   assert.equal(occurrences, 1);
 });
 
+// Two DISTINCT calls to the same tool with the SAME result payload but
+// DIFFERENT args (e.g. two approve_feed_item calls that both happen to
+// return scheduled: 0, for two different feed items) must not collapse into
+// one reported line — a dedup key that ignores args would hide one of the
+// two scheduled counts, defeating the whole point of this function.
+test("toolResultsText reports both calls when the same tool returns identical results for different args", () => {
+  const msgs: PollMessage[] = [
+    {
+      message_id: 1,
+      role: "assistant",
+      content: "Approved both.",
+      tool_calls: [
+        { tool: "approve_feed_item", args: { feed_item_id: 5 }, result: { message: "Approved", scheduled: 0 } },
+        { tool: "approve_feed_item", args: { feed_item_id: 9 }, result: { message: "Approved", scheduled: 0 } },
+      ],
+    },
+  ];
+  const out = toolResultsText(msgs);
+  const occurrences = out.split("approve_feed_item").length - 1;
+  assert.equal(occurrences, 2, `expected both distinct calls reported, got:\n${out}`);
+});
+
 test("toolResultsText handles missing actions without throwing", () => {
   const msgs: PollMessage[] = [{ message_id: 1, role: "assistant", content: "hello" }];
   assert.equal(toolResultsText(msgs), "");
