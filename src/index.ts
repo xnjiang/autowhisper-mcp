@@ -11,8 +11,14 @@
  *   - autowhisper_action:           deterministic feed/post actions
  *   - autowhisper_edit_content:     deterministic field-level content edits
  *   - autowhisper_confirm:          approve/decline a high-impact action
+ *   - autowhisper_connect:          device flow — get authorised without a copy-paste
  *
- * Auth: set AUTOWHISPER_API_TOKEN (Settings -> Connect your agent).
+ * Auth, in order of precedence:
+ *   1. AUTOWHISPER_API_TOKEN in this server's env
+ *   2. ~/.config/autowhisper/credentials.json (shared with autowhisper-skill;
+ *      override the path with AUTOWHISPER_CREDENTIALS)
+ *   3. autowhisper_connect — the agent asks, the user clicks Approve once, and
+ *      the token lands in both this process and that file. No restart.
  * Base: override with AUTOWHISPER_BASE_URL (defaults to https://autowhisper.xyz).
  *
  * NOTE: stdout is the JSON-RPC channel — never write logs there. Use console.error.
@@ -20,6 +26,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { fastReadPath } from "./fast-read.js";
 import {
   pollUrl,
@@ -33,7 +42,28 @@ import {
 } from "./poll-shape.js";
 
 const BASE_URL = (process.env.AUTOWHISPER_BASE_URL || "https://autowhisper.xyz").replace(/\/+$/, "");
-const TOKEN = process.env.AUTOWHISPER_API_TOKEN || "";
+
+// Shared with the autowhisper-skill (CLI agents): whichever of the two runs the
+// device flow first, the other one picks the token up from this same file.
+const CREDENTIALS_PATH =
+  process.env.AUTOWHISPER_CREDENTIALS ||
+  join(homedir(), ".config", "autowhisper", "credentials.json");
+
+function tokenFromCredentialsFile(): string {
+  try {
+    return JSON.parse(readFileSync(CREDENTIALS_PATH, "utf8")).api_token || "";
+  } catch {
+    return ""; // absent or unreadable is the normal "not connected yet" state
+  }
+}
+
+// `let`, not `const`: autowhisper_connect writes it back here so the token works
+// in THIS process. Every read below sits inside a function body and therefore
+// sees the current value — that is why adding the device flow touched exactly
+// this one declaration and none of the 18 other TOKEN references.
+// ⛔ Do not capture TOKEN into a module-level constant (a prebuilt headers
+//    object, say) — that would silently pin the pre-connect empty string.
+let TOKEN = process.env.AUTOWHISPER_API_TOKEN || tokenFromCredentialsFile();
 
 const POLL_INTERVAL_MS = 3000;
 // 3 min, not 90s: grounded ad advice (recommend_targeting with live web search)
@@ -54,7 +84,7 @@ async function api(path: string, init: RequestInit): Promise<Response> {
   });
 }
 
-const NO_TOKEN = `AUTOWHISPER_API_TOKEN is not set. Get a token at ${BASE_URL}/skill (Settings -> Connect your agent — new accounts get free credits), then set it in this MCP server's env.`;
+const NO_TOKEN = `Not connected to AutoWhisper yet. Call autowhisper_connect — it prints a link for the user to approve, then this server is authorised immediately (no restart, nothing to copy and paste). Setting AUTOWHISPER_API_TOKEN in this server's env still works if you already have a token.`;
 
 type ProductSummary = {
   account?: {
@@ -219,7 +249,7 @@ async function requestJson<T>(
   } catch (e) {
     return { error: `Could not reach AutoWhisper at ${BASE_URL}: ${(e as Error).message}` };
   }
-  if (res.status === 401) return { error: "Unauthorized — check your AUTOWHISPER_API_TOKEN." };
+  if (res.status === 401) return { error: "Unauthorized — the token is missing or no longer valid. Call autowhisper_connect to re-authorise." };
 
   const body = await readBody(res);
   if (!res.ok && !okStatuses.includes(res.status)) return { error: apiErrorMessage(res, body) };
@@ -410,7 +440,136 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-const server = new McpServer({ name: "autowhisper", version: "0.6.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.7.0" });
+
+// ─── Device flow (RFC 8628) ────────────────────────────────────────────────
+// The server side has had this since day one; no client used it, so every
+// agent was told to send its human off to copy a token by hand. Now the agent
+// asks for a code, the human clicks Approve once, and we are authorised.
+//
+// ⛔ The token must never travel through the chat. It goes: browser → server →
+//    this process → disk. Do not print it, not even truncated.
+
+const DEVICE_POLL_CEILING_MS = 15 * 60 * 1000; // matches the server's expires_in (900s)
+
+async function deviceCode(deviceName: string) {
+  const res = await fetch(`${BASE_URL}/device/code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_name: deviceName }),
+  });
+  if (!res.ok) throw new Error(`device/code returned ${res.status}`);
+  return (await res.json()) as {
+    device_code: string;
+    user_code: string;
+    verification_uri_complete: string;
+    expires_in: number;
+    interval: number;
+  };
+}
+
+function persistToken(value: string) {
+  TOKEN = value; // in-process first: the very next tool call must work
+  try {
+    mkdirSync(dirname(CREDENTIALS_PATH), { recursive: true });
+    writeFileSync(CREDENTIALS_PATH, JSON.stringify({ api_token: value }), { mode: 0o600 });
+    return true;
+  } catch {
+    // Disk write is a convenience (it survives a restart and is shared with the
+    // skill). Failing it must NOT fail the connection — we already hold the
+    // token in memory and this session is fully usable.
+    return false;
+  }
+}
+
+server.registerTool(
+  "autowhisper_connect",
+  {
+    title: "Connect this agent to AutoWhisper",
+    description:
+      "Authorise this MCP server against the user's AutoWhisper account. Returns a link; the user clicks Approve once and this server is authorised immediately — no restart, nothing to copy and paste. Call this when a tool reports it is not connected, or when a call returns Unauthorized. Show the user the link and tell them you are waiting.",
+    inputSchema: {
+      device_name: z
+        .string()
+        .optional()
+        .describe("What the user will see on the approval screen, e.g. 'Claude Desktop'. Name yourself so they recognise the request."),
+    },
+  },
+  async ({ device_name }) => {
+    let start: Awaited<ReturnType<typeof deviceCode>>;
+    try {
+      start = await deviceCode(device_name || "MCP client");
+    } catch (e) {
+      return text(`Could not start the connection: ${(e as Error).message}`, true);
+    }
+
+    // ⛔ Return the link NOW and poll in the background.
+    //    The obvious shape — poll first, return the link with the result — is a
+    //    deadlock: the link lives in the return value, so the user cannot
+    //    approve until we stop waiting for them to approve.
+    pending = { uri: start.verification_uri_complete, until: Date.now() + start.expires_in * 1000 };
+    void pollForApproval(start);
+
+    return text(
+      `Ask the user to open this link and click Approve:\n\n${start.verification_uri_complete}\n\n` +
+        `Code: ${start.user_code} (expires in ${Math.round(start.expires_in / 60)} minutes)\n\n` +
+        `I will pick up the approval automatically — no restart. Tell them you are waiting, then retry ` +
+        `whatever you were doing; it will work once they have approved.`,
+    );
+  },
+);
+
+// What the other tools report while an approval is outstanding, so "not
+// connected" does not read the same before and after the user was handed a link.
+let pending: { uri: string; until: number } | null = null;
+
+function connectionHint(): string {
+  if (pending && Date.now() < pending.until) {
+    return `Still waiting for the user to approve:\n${pending.uri}\n\nOnce they click Approve, retry this call.`;
+  }
+  return NO_TOKEN;
+}
+
+async function pollForApproval(start: Awaited<ReturnType<typeof deviceCode>>) {
+  let intervalMs = Math.max(1, start.interval) * 1000;
+  const deadline = Date.now() + Math.min(start.expires_in * 1000, DEVICE_POLL_CEILING_MS);
+
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+    let body: { access_token?: string; error?: string } = {};
+    try {
+      const res = await fetch(`${BASE_URL}/device/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_code: start.device_code }),
+      });
+      body = (await res.json().catch(() => ({}))) as typeof body;
+    } catch {
+      continue; // transient network trouble: keep waiting, the code is still valid
+    }
+
+    if (body.access_token) {
+      const saved = persistToken(body.access_token);
+      pending = null;
+      console.error(`autowhisper-mcp connected${saved ? "" : " (in-memory only — could not write credentials file)"}`);
+      return;
+    }
+
+    switch (body.error) {
+      case "authorization_pending":
+        break; // keep waiting
+      case "slow_down":
+        intervalMs += 5000; // the server is telling us to back off; obey it
+        break;
+      default:
+        // access_denied, expired_token, invalid_grant — all terminal.
+        pending = null;
+        console.error(`autowhisper-mcp connection ended: ${body.error || "unknown"}`);
+        return;
+    }
+  }
+  pending = null;
+}
 
 server.registerTool(
   "autowhisper_products_summary",
@@ -420,7 +579,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     return handleFastRead("/api/products/summary");
   },
 );
@@ -437,7 +596,7 @@ server.registerTool(
     },
   },
   async ({ include_archived, workspace_id, limit }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const params = new URLSearchParams();
     if (include_archived !== undefined) params.set("include_archived", String(include_archived));
     if (workspace_id !== undefined) params.set("workspace_id", String(workspace_id));
@@ -456,7 +615,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     return handleFastRead("/api/cmo/status");
   },
 );
@@ -473,7 +632,7 @@ server.registerTool(
     },
   },
   async ({ status, workspace_id, limit }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const params = new URLSearchParams();
     if (status !== undefined) params.set("status", status);
     if (workspace_id !== undefined) params.set("workspace_id", String(workspace_id));
@@ -496,7 +655,7 @@ server.registerTool(
     },
   },
   async ({ status, workspace_id, limit }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const params = new URLSearchParams();
     if (status !== undefined) params.set("status", status);
     if (workspace_id !== undefined) params.set("workspace_id", String(workspace_id));
@@ -515,7 +674,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const result = await getJson<Wallet>("/api/wallet");
     const wallet = result.data || {};
     return result.error ? text(result.error, true) : text(`Wallet: ${wallet.formatted_balance || `${wallet.balance ?? 0} ${wallet.currency || "credits"}`}.`);
@@ -530,7 +689,7 @@ server.registerTool(
     inputSchema: { workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. To reach another one, get its id from autowhisper_status.") },
   },
   async ({ workspace_id }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const path = `/api/platforms${workspace_id !== undefined ? `?workspace_id=${workspace_id}` : ""}`;
     const result = await getJson<PlatformList>(path);
     return result.error ? text(result.error, true) : text(formatPlatforms(result.data || {}));
@@ -554,7 +713,7 @@ server.registerTool(
     },
   },
   async ({ tool, feed_item_id, post_id, scheduled_at, reason, content_type, content_id, workspace_id }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const values: Record<string, string> = {};
     if (feed_item_id !== undefined) values.feed_item_id = String(feed_item_id);
     if (post_id !== undefined) values.post_id = String(post_id);
@@ -589,7 +748,7 @@ server.registerTool(
     },
   },
   async ({ content_type, content_id, title, body, hook, cta, tone, keywords, workspace_id }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const values: Record<string, string> = {};
     if (title !== undefined) values.title = title;
     if (body !== undefined) values.body = body;
@@ -621,7 +780,7 @@ server.registerTool(
     },
   },
   async ({ instruction, product_id, workspace_id }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     if (!product_id) {
       const path = fastReadPath(instruction);
       if (path) return handleFastRead(path);
@@ -644,7 +803,7 @@ server.registerTool(
     } catch (e) {
       return text(`Could not reach AutoWhisper at ${BASE_URL}: ${(e as Error).message}`, true);
     }
-    if (send.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
+    if (send.status === 401) return text("Unauthorized — the token is missing or no longer valid. Call autowhisper_connect to re-authorise.", true);
     if (send.status === 429) return text("Rate limited — wait a minute and try again.", true);
     if (!send.ok) return text(`AutoWhisper API error (message): HTTP ${send.status}`, true);
     const sent = (await send.json()) as {
@@ -726,7 +885,7 @@ server.registerTool(
     },
   },
   async ({ message_id, decision, workspace_id }) => {
-    if (!TOKEN) return text(NO_TOKEN, true);
+    if (!TOKEN) return text(connectionHint(), true);
     const body = new URLSearchParams({ message_id: String(message_id), decision });
     if (workspace_id !== undefined) body.set("workspace_id", String(workspace_id));
     let res: Response;
@@ -746,7 +905,7 @@ server.registerTool(
         true,
       );
     if (res.status === 422) return text("Not a valid confirmation, or invalid decision.", true);
-    if (res.status === 401) return text("Unauthorized — check your AUTOWHISPER_API_TOKEN.", true);
+    if (res.status === 401) return text("Unauthorized — the token is missing or no longer valid. Call autowhisper_connect to re-authorise.", true);
     if (!res.ok) return text(`AutoWhisper API error (confirm): HTTP ${res.status}`, true);
     // The server returns {ok, decision, result} on "yes" — result carries the
     // same shape as autowhisper_action's response (including approve_feed_item's
