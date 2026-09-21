@@ -31,8 +31,11 @@ closes that gap on its own, but the npm half is still yours to do.
 
 3. **Publish to npm.** `cd` into this directory first — `npm publish --prefix`
    does **not** work, it packages the current working directory instead. Check the
-   tarball header says `autowhisper-mcp@<your version>` and `total files: 5`
-   before confirming.
+   tarball header says `autowhisper-mcp@<your version>` and that it contains only
+   LICENSE, README.md, package.json and the `dist/*.js` runtime files — no
+   `*.test.js`. (This used to say "total files: 5"; it became 6 when
+   `poll-shape.ts` was split out of `index.ts`, so a fixed count just goes stale
+   and gets ignored. Check the shape, not the number.)
    ```sh
    npm publish --access public
    ```

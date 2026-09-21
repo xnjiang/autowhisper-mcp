@@ -13,12 +13,23 @@ fi
 
 cd "$(dirname "$0")/.."
 
+# ⚠️ The early return below asks ALL FOUR, not just package.json. Asking only
+# package.json uses one of the four as a proxy for whether the four agree — and
+# they disagree precisely when someone has touched one of them by hand (e.g.
+# `npm version`, which bumps package.json alone). On 2026-09-21 that made this
+# script print "Already at 0.8.0 — nothing to do" while server.json and
+# src/index.ts sat at 0.7.0: the exact drift it exists to prevent, reported as
+# success. Keeping the four in step is the job; one of them cannot vouch for it.
 current=$(jq -r .version package.json)
-if [ "$current" = "$new" ]; then
-  echo "Already at $new — nothing to do."
+pkg_inner=$(jq -r '[.packages[] | select(.identifier=="autowhisper-mcp") | .version] | join(",")' server.json)
+server_ver=$(jq -r .version server.json)
+index_ver=$(grep -o 'version: "[^"]*"' src/index.ts | head -1 | cut -d'"' -f2)
+
+if [ "$current" = "$new" ] && [ "$server_ver" = "$new" ] && [ "$pkg_inner" = "$new" ] && [ "$index_ver" = "$new" ]; then
+  echo "Already at $new in all four places — nothing to do."
   exit 0
 fi
-echo "Bumping $current -> $new"
+echo "Bumping -> $new (package.json=$current server.json=$server_ver packages=$pkg_inner index.ts=$index_ver)"
 
 tmp=$(mktemp)
 jq --arg v "$new" '.version = $v' package.json > "$tmp" && mv "$tmp" package.json

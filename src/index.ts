@@ -443,7 +443,7 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-const server = new McpServer({ name: "autowhisper", version: "0.7.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.8.0" });
 
 // ─── Device flow (RFC 8628) ────────────────────────────────────────────────
 // The server side has had this since day one; no client used it, so every
