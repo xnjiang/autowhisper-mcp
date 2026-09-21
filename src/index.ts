@@ -8,6 +8,7 @@
  *   - autowhisper_status:           fast read-only account/CMO status
  *   - autowhisper_feed:             fast read-only CMO feed list
  *   - autowhisper_posts/wallet/platforms: fast operational reads
+ *   - autowhisper_performance:       cross-channel results — did any of it work?
  *   - autowhisper_action:           deterministic feed/post actions
  *   - autowhisper_edit_content:     deterministic field-level content edits
  *   - autowhisper_confirm:          approve/decline a high-impact action
@@ -37,6 +38,8 @@ import {
   composeReply,
   formatAction,
   formatConfirmResult,
+  formatPerformance,
+  type Performance,
   type PollMessage,
   type ActionResult,
 } from "./poll-shape.js";
@@ -696,13 +699,43 @@ server.registerTool(
   },
 );
 
+// The only tool that answers "did any of this work?" rather than "what did we
+// make?". The endpoint shipped 2026-09-01 and went unreached from here until
+// 2026-09-21: without it an agent can publish all day and never find out that
+// nothing landed, which is the one question the owner actually has.
+server.registerTool(
+  "autowhisper_performance",
+  {
+    title: "AutoWhisper performance",
+    description: "Read-only cross-channel results for ONE workspace: a four-layer funnel, a per-channel breakdown, and ad spend over the window. Use this to answer how published content is actually doing, and before advising which creative to fund or scale — autowhisper_feed and autowhisper_posts only say what was made and sent, never whether it worked. ad_spend_cents is null (not 0) when the account has no active workspace: null means we cannot answer, 0 would assert nothing was spent.",
+    inputSchema: {
+      workspace_id: z.number().optional().describe("Workspace to read. Omit for the user's CURRENT workspace — other workspaces are NOT included. Get other ids from autowhisper_status."),
+      window_days: z.number().optional().describe("Look-back window in days. The server clamps it to its own supported range and defaults when omitted."),
+    },
+  },
+  async ({ workspace_id, window_days }) => {
+    if (!TOKEN) return text(connectionHint(), true);
+    const query = [
+      workspace_id !== undefined ? `workspace_id=${workspace_id}` : "",
+      window_days !== undefined ? `window_days=${window_days}` : "",
+    ].filter(Boolean).join("&");
+    const result = await getJson<Performance>(`/api/performance${query ? `?${query}` : ""}`);
+    if (result.error) return text(result.error, true);
+    return text(formatPerformance(result.data));
+  },
+);
+
 server.registerTool(
   "autowhisper_action",
   {
     title: "AutoWhisper delivery action",
     description: "Run an explicit feed or post action without an AI chat turn. High-impact actions return a confirmation message_id; confirm it with autowhisper_confirm. approve_feed_item PUBLISHES: it schedules the piece to every connected platform, and for a video draft it also starts the render and charges credits for it — approving is the spend, not a bookmark. When nothing is connected it schedules nothing, and connecting a platform later does NOT go back for it; the result line says which happened. regenerate_content rewrites an existing draft IN PLACE (same record id, new text) — it is the same action as the Revise button on the web feed card; it takes content_type + content_id, not feed_item_id, and always returns a confirmation because it spends credits.",
     inputSchema: {
-      tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "regenerate_content", "reschedule_post", "retry_post", "mark_as_published"]),
+      // Keep in step with `direct_action_tools` in GET /api/contract. boost_post
+      // shipped server-side 2026-08-28 and was missing from this enum until
+      // 2026-09-21 — the capability existed, was documented, and no agent could
+      // reach it, because this list is the only thing the model ever sees.
+      tool: z.enum(["approve_feed_item", "reject_feed_item", "dismiss_feed_item", "publish_content", "regenerate_content", "reschedule_post", "retry_post", "mark_as_published", "boost_post"]),
       feed_item_id: z.number().optional().describe("Required for feed actions. The leading `feed_item #<id>` in an autowhisper_feed row — NOT the `content: <type> #<id>` on the same row."),
       post_id: z.number().optional().describe("Required for post actions."),
       scheduled_at: z.string().optional().describe("Required for reschedule_post; ISO8601 or natural language supported by AutoWhisper."),

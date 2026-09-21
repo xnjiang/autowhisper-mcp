@@ -7,6 +7,7 @@ import {
   composeReply,
   formatAction,
   formatConfirmResult,
+  formatPerformance,
   type PollMessage,
 } from "./poll-shape.js";
 
@@ -228,4 +229,83 @@ test("composeReply folds cards into the combined output — regression guard for
   assert.match(out, /See below/);
   assert.match(out, /Your targeting plan/);
   assert.match(out, /Start on Meta/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// receipt_text (server-side since 2026-09-13; wired here 2026-09-21)
+//
+// The server computes this sentence from what actually happened and writes it
+// for the OWNER to read. `message` is aimed at the model. Before this, the
+// package only read `message`, so an agent could tell the owner something less
+// accurate than the dashboard told them about the same action.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("formatAction prefers receipt_text over message", () => {
+  const out = formatAction({
+    message: "Approved",
+    receipt_text: "2 posts queued; the ad was held back — no ad channel connected.",
+  });
+  assert.match(out, /no ad channel connected/);
+  assert.doesNotMatch(out, /^Approved/);
+});
+
+test("formatAction still falls back to message when the server sends no receipt_text", () => {
+  assert.match(formatAction({ message: "Approved" }), /Approved/);
+});
+
+// The language-neutral "did it actually go anywhere" note must survive: it is
+// the one fact an English-speaking agent cannot read out of a localized
+// sentence, and receipt_text is localized to the owner just like message is.
+test("receipt_text does not swallow the scheduled: 0 warning", () => {
+  const out = formatAction({ receipt_text: "已批准", scheduled: 0 });
+  assert.match(out, /已批准/);
+  assert.match(out, /nothing was scheduled/);
+});
+
+test("formatConfirmResult goes through the same receipt_text preference", () => {
+  const out = formatConfirmResult("yes", { message: "Approved", receipt_text: "Held back — nothing connected." });
+  assert.match(out, /Held back/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// formatPerformance — GET /api/performance, wired 2026-09-21
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("formatPerformance renders funnel layers with their sources", () => {
+  const out = formatPerformance({
+    workspace_id: 7,
+    period: { from: "2026-08-22T00:00:00Z", to: "2026-09-21T00:00:00Z" },
+    layers: { published: 12, reached: 800, engaged: 40, inquiries: 3 },
+    layer_sources: { reached: "platform analytics" },
+    ad_spend_cents: 12345,
+  });
+  assert.match(out, /workspace 7/);
+  assert.match(out, /2026-08-22 → 2026-09-21/);
+  assert.match(out, /published: 12/);
+  assert.match(out, /reached: 800 \(platform analytics\)/);
+  assert.match(out, /Ad spend: \$123\.45/);
+});
+
+// ⚠️ The server is explicit that these are different answers: null means it
+// cannot tell us (no active workspace), 0 means nothing was spent. Rendering
+// null as $0.00 invents a fact about the owner's ad budget.
+test("formatPerformance keeps null ad spend distinct from zero", () => {
+  assert.match(formatPerformance({ ad_spend_cents: null }), /unknown/);
+  assert.match(formatPerformance({ ad_spend_cents: 0 }), /\$0\.00/);
+  assert.doesNotMatch(formatPerformance({ ad_spend_cents: null }), /\$0\.00/);
+});
+
+// An empty funnel printed as nothing reads as "all zero" — a claim. Say it.
+test("formatPerformance says there is no data instead of printing an empty funnel", () => {
+  assert.match(formatPerformance({ layers: {} }), /No funnel data/);
+});
+
+test("formatPerformance survives an absent body without throwing", () => {
+  assert.match(formatPerformance(undefined), /Performance/);
+  assert.match(formatPerformance(null), /unknown/);
+});
+
+test("formatPerformance breaks out per-channel stats", () => {
+  const out = formatPerformance({ by_channel: { instagram: { posts: 4, engagements: 31 } } });
+  assert.match(out, /instagram: posts=4, engagements=31/);
 });

@@ -146,13 +146,26 @@ export type ActionResult = {
   // approve_feed_item: how many platforms the piece was actually scheduled to.
   // 0 means it went nowhere (nothing connected that accepts this content).
   scheduled?: number;
+  // The sentence the server wrote FOR THE OWNER TO READ, computed from what
+  // actually happened (server-side: 2026-09-13). `message` is written for the
+  // model; the two are deliberately different. The server added this field
+  // because a fixed lookup table had been overwriting the computed receipt —
+  // "queued for sending" was shown even when zero ad channels accepted the
+  // piece. Fixed wording is not evidence of a result.
+  //
+  // Declared by the server at GET /api/contract as `receipt_field`.
+  receipt_text?: string;
 };
 
 export function formatAction(result: ActionResult): string {
   if (result.confirmation_required) {
     return `[Confirmation required] Call autowhisper_confirm with message_id=${result.message_id} and decision="yes" to proceed, or "no" to decline.`;
   }
-  const message = result.message || "Done.";
+  // receipt_text wins over message. The server computes it from the actual
+  // outcome and writes it for the owner to read; message is aimed at the model
+  // and can be the generic one. Preferring message here is how an agent ends up
+  // saying "queued for sending" about a piece that no channel accepted.
+  const message = result.receipt_text || result.message || "Done.";
   // `message` is localized to the OWNER's language — an English-speaking agent
   // cannot be expected to read 「已批准并排期发布到 Facebook」 or, worse, to notice
   // that 「尚未绑定任何社交平台」 means nothing went out. Approving publishes, so
@@ -182,4 +195,63 @@ export function formatConfirmResult(decision: "yes" | "no", result: ActionResult
   if (decision === "no") return "Declined.";
   if (!result) return "Done — the action was performed.";
   return formatAction(result);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/performance (server-side since 2026-09-01; wired here 2026-09-21)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Performance = {
+  scope?: string;
+  workspace_id?: number;
+  period?: { from?: string; to?: string };
+  layers?: Record<string, number>;
+  layer_sources?: Record<string, string>;
+  by_channel?: Record<string, Record<string, number>>;
+  // ⚠️ null and 0 are DIFFERENT answers here and the server means it: null is
+  // "we cannot tell you" (no active workspace), 0 is "nothing was spent".
+  // Collapsing them with `?? 0` invents a fact about the owner's ad budget.
+  ad_spend_cents?: number | null;
+};
+
+function money(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function formatPerformance(data: Performance | null | undefined): string {
+  const d = data || {};
+  const lines: string[] = [];
+
+  const from = d.period?.from?.slice(0, 10);
+  const to = d.period?.to?.slice(0, 10);
+  lines.push(`Performance${d.workspace_id ? ` for workspace ${d.workspace_id}` : ""}${from && to ? ` (${from} → ${to})` : ""}:`);
+
+  const layers = Object.entries(d.layers || {});
+  if (layers.length === 0) {
+    // Say so rather than printing an empty funnel: an empty funnel reads as
+    // "everything is zero", which is a claim, not the absence of one.
+    lines.push("  No funnel data for this window.");
+  } else {
+    for (const [name, value] of layers) {
+      const source = d.layer_sources?.[name];
+      lines.push(`  ${name}: ${value}${source ? ` (${source})` : ""}`);
+    }
+  }
+
+  const channels = Object.entries(d.by_channel || {});
+  if (channels.length > 0) {
+    lines.push("By channel:");
+    for (const [channel, stats] of channels) {
+      const parts = Object.entries(stats || {}).map(([k, v]) => `${k}=${v}`).join(", ");
+      lines.push(`  ${channel}: ${parts || "no data"}`);
+    }
+  }
+
+  lines.push(
+    d.ad_spend_cents === null || d.ad_spend_cents === undefined
+      ? "Ad spend: unknown (no active workspace to read)"
+      : `Ad spend: ${money(d.ad_spend_cents)}`,
+  );
+
+  return lines.join("\n");
 }
