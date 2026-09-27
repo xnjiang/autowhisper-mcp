@@ -4,9 +4,23 @@ A marketing department for any MCP client (Claude Desktop, Cursor, Windsurf, n8n
 
 It's the same CMO as the AutoWhisper dashboard, exposed over MCP. Honest scope: posting ≠ traffic — reach comes from your paid campaigns; this makes sure the creatives convert and your storefront doesn't kill them.
 
-## Install
+## Connect by URL (recommended)
 
-Add to your MCP client config (Claude Desktop / Cursor / etc.):
+No install. Point your client at the remote server:
+
+```
+https://autowhisper.xyz/mcp
+```
+
+- **Claude.ai / ChatGPT / Claude Desktop connectors** — add a custom connector with that URL; you'll be asked to sign in and click **Approve** once (OAuth).
+- **Claude Code** — `claude mcp add --transport http autowhisper https://autowhisper.xyz/mcp --header "Authorization: Bearer <your token>"`
+- **Cursor / VS Code / other HTTP-capable clients** — same URL, header `Authorization: Bearer <your token>`.
+
+Same tools and replies as the npm package below, always up to date (no version to upgrade).
+
+## Install via npm (local stdio clients only)
+
+Use this only if your client can't connect to a URL. Add to your MCP client config:
 
 ```json
 {

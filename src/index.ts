@@ -443,7 +443,7 @@ async function handleFastRead(path: string) {
   return result.error ? text(result.error, true) : text(formatCmoStatus(result.data || {}));
 }
 
-const server = new McpServer({ name: "autowhisper", version: "0.8.0" });
+const server = new McpServer({ name: "autowhisper", version: "0.9.0" });
 
 // ─── Device flow (RFC 8628) ────────────────────────────────────────────────
 // The server side has had this since day one; no client used it, so every
@@ -954,6 +954,11 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`autowhisper-mcp ready (base: ${BASE_URL}, token: ${TOKEN ? "set" : "MISSING"})`);
+  // 过渡期:npm 包降为「只支持本地 stdio 的客户端」用。stdout 是协议通道,提示只能走 stderr。
+  console.error(
+    "autowhisper-mcp: you can now connect without installing anything — use https://autowhisper.xyz/mcp " +
+      "(see https://github.com/xnjiang/autowhisper-mcp#connect-by-url-recommended). This npm package is kept for stdio-only clients."
+  );
 }
 
 main().catch((err) => {
