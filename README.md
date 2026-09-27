@@ -12,9 +12,9 @@ No install. Point your client at the remote server:
 https://autowhisper.xyz/mcp
 ```
 
-- **Claude.ai / ChatGPT / Claude Desktop connectors** — add a custom connector with that URL; you'll be asked to sign in and click **Approve** once (OAuth).
-- **Claude Code** — `claude mcp add --transport http autowhisper https://autowhisper.xyz/mcp --header "Authorization: Bearer <your token>"`
-- **Cursor / VS Code / other HTTP-capable clients** — same URL, header `Authorization: Bearer <your token>`.
+- **Claude.ai / Claude Desktop** — Settings → Connectors → Add custom connector, paste the URL, then click **Approve** on the page that opens (OAuth). ChatGPT and other apps: add a connector the same way.
+- **Claude Code** — run `claude mcp add --transport http autowhisper https://autowhisper.xyz/mcp`, then type `/mcp` in Claude Code and choose autowhisper → **Authenticate**.
+- **Cursor / VS Code / other HTTP-capable clients** — add the same URL; they'll open the same Approve page. Already have an AutoWhisper API token? You can send it as `Authorization: Bearer <token>` instead.
 
 Same tools and replies as the npm package below, always up to date (no version to upgrade).
 
